@@ -159,7 +159,7 @@ def get_lower_left_xy(
 
 
 def convert_temperature_dataset(data: xr.Dataset, chunk_size: int = 144) -> xr.Dataset:
-    """Convert temperature in Kelvin to the desired output_unit."""
+    """Convert temperature in Kelvin to the desired output_unit. Utilizes chunking to save memory."""
     output_unit = NOAADataVariable.TMP.measurement_unit
     data_unit = data.units
     if data_unit != "K":
@@ -285,7 +285,7 @@ def create_gridded_data(
 
 def interpolate_nan_values(ds: xr.DataArray) -> xr.DataArray:
     """
-    Interpolates missing NaN values in a DataArray along the 'latitude' and 'longitude' dimensions
+    Interpolate missing NaN values in a DataArray along the 'latitude' and 'longitude' dimensions
     using linear interpolation. Averages the results from both directions and fills remaining NaNs.
     """
     ds2_rechunked = ds.chunk({"latitude": -1, "longitude": -1})
@@ -313,8 +313,8 @@ def get_s3_zarr_data(
     interp_nan_vals: bool = True,
 ) -> xr.Dataset:
     """
-    Loads and processes Zarr datasets from S3, clips them to a given area of interest (AOI),
-    filters by time and variables, and optionally interpolates missing values.
+    Load and processe Zarr datasets from S3, clipping them to a given area of interest (AOI),
+    filter by time and variables, and optionally interpolates missing values.
     """
 
     s3 = s3fs.S3FileSystem(anon=True)
@@ -337,7 +337,7 @@ def get_s3_zarr_data(
         for var in ds.data_vars:
             data_var = ds[var]
 
-            # Compute valid land mask
+            # Compute valid mask
             valid_mask = ~data_var.isnull().all("time")
 
             # Determine which time slices need interpolation
@@ -407,8 +407,6 @@ def write_to_dss(
         reprojected_chunks = []
 
         for i in range(0, len(times), time_chunk_size):
-            logging.info("reprojecting chunk")
-
             chunk_times = times[i : i + time_chunk_size]
             chunk = data.sel(time=chunk_times)
             chunk = chunk.rio.reproject(SHG_WKT, resolution=output_resolution_m)
@@ -416,7 +414,6 @@ def write_to_dss(
 
         data = xr.concat(reprojected_chunks, dim="time")
 
-    logging.info("DONE reprojecting")
     lower_x, lower_y = get_lower_left_xy(data, output_resolution_m)
 
     for time_step in data.time:
@@ -470,9 +467,9 @@ def noaa_zarr_to_dss(
     voi_keys = [v.value for v in all_variables]
 
     # get aorc data
-    logging.info("getting aorc data")
+    logging.info("Getting aorc data")
     aorc_data = get_s3_zarr_data(aorc_paths, aoi_gdf, min_start, max_end, voi_keys)
-    logging.info("Done getting aorc")
+    logging.info("Successfully retrieved aorc data")
 
     # write to dss
     for data_variable, duration in variable_duration_map.items():
@@ -481,9 +478,9 @@ def noaa_zarr_to_dss(
         data = aorc_data[data_variable.value].sel(time=slice(var_start, var_end))
 
         if data_variable == NOAADataVariable.TMP:
-            logging.info("converting temp dataset")
+            logging.info("converting temperature dataset")
             data = convert_temperature_dataset(data)
-            logging.info("DONE converting temp dataset")
+            logging.info("Successfully converted temperature dataset")
         logging.info("writing to dss")
         write_to_dss(
             output_dss_path=output_dss_path,
