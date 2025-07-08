@@ -11,7 +11,7 @@ from typing import Any, List, Union
 import pandas as pd
 import pystac
 from pystac import Asset, Collection, Item, Link, MediaType
-from shapely.geometry import mapping, shape
+from shapely.geometry import mapping, shape, Point
 
 from stormhub.hydro_domain import HydroDomain
 from stormhub.logger import initialize_logger
@@ -23,6 +23,18 @@ from stormhub.utils import (
     generate_date_range,
     validate_config,
 )
+
+
+def get_meteorological_season(month: int) -> str:
+    """Return meteorological season given a month."""
+    if month in [12, 1, 2]:
+        return "Winter"
+    elif month in [3, 4, 5]:
+        return "Spring"
+    elif month in [6, 7, 8]:
+        return "Summer"
+    else:
+        return "Autumn"
 
 
 class StormCollection(pystac.Collection):
@@ -149,13 +161,12 @@ class StormCollection(pystac.Collection):
 
         self.save_object(dest_href=spm.collection_file(self.id), include_self_link=False)
 
-    def event_feature_collection(self, spm: StacPathManager, threshold: float):
+    def watershed_centroid_feature_collection(self, spm: StacPathManager):
         """
-        Create a feature collection of storm events.
+        Create a feature collection of watershed centroids from each storm event.
 
         Args:
             spm (StacPathManager): The STAC path manager.
-            threshold (float): The precipitation threshold for including events.
         """
         features = []
         for item in self.get_all_items():
@@ -168,7 +179,7 @@ class StormCollection(pystac.Collection):
                 "geometry": mapping(geom),
                 "properties": {
                     "id": item.id,
-                    "storm_start_date": item.properties.get("start_datetime").split("T")[0],
+                    "storm_start_date": item.properties.get("start_datetime"),
                     "aorc:statistics": item.properties.get("aorc:statistics"),
                 },
             }
@@ -176,16 +187,65 @@ class StormCollection(pystac.Collection):
 
         feature_collection = {"type": "FeatureCollection", "features": features}
 
-        output_geojson = spm.collection_asset(self.id, "top-storms.geojson")
+        output_geojson = spm.collection_asset(self.id, "transposed_watershed_centroids.geojson")
         with open(output_geojson, "w", encoding="utf-8") as f:
             json.dump(feature_collection, f, indent=4)
 
         self.add_asset(
-            "storm-events",
+            "transposed_watershed_centroids",
             Asset(
-                href=spm.collection_asset(self.id, "top-storms.geojson"),
-                title="Storm Summary",
-                description=f"Feature collection of all events with mean precipitation greater than {threshold}",
+                href=spm.collection_asset(self.id, "transposed_watershed_centroids.geojson"),
+                title="Transposed Watershed Centroids",
+                description=f"Feature collection of Transposed Watershed Centroids from each storm event.",
+                media_type=MediaType.GEOJSON,
+                roles=["storm_summary"],
+            ),
+        )
+
+        logging.info("FeatureCollection saved to %s", output_geojson)
+        self.save_object(dest_href=spm.collection_file(self.id), include_self_link=False)
+
+    def max_precip_feature_collection(self, spm: StacPathManager):
+        """
+        Create a feature collection of max precipitation locations from each storm event.
+
+        Args:
+            spm (StacPathManager): The STAC path manager.
+        """
+        features = []
+        for item in self.get_all_items():
+            loc = item.properties.get("aorc:max_precip_location")
+            if not loc or "latitude" not in loc or "longitude" not in loc:
+                continue
+
+            storm_start = item.properties.get("start_datetime")
+            storm_start_dt = datetime.strptime(storm_start, "%Y-%m-%dT%H:%M:%SZ")
+
+            point = Point(loc["longitude"], loc["latitude"])
+            feature = {
+                "type": "Feature",
+                "geometry": mapping(point),
+                "properties": {
+                    "id": item.id,
+                    "storm_start_date": storm_start,
+                    "aorc:statistics": item.properties.get("aorc:statistics"),
+                    "season": get_meteorological_season(storm_start_dt.month),
+                },
+            }
+            features.append(feature)
+
+        feature_collection = {"type": "FeatureCollection", "features": features}
+
+        output_geojson = spm.collection_asset(self.id, "max_precip_locations.geojson")
+        with open(output_geojson, "w", encoding="utf-8") as f:
+            json.dump(feature_collection, f, indent=4)
+
+        self.add_asset(
+            "max_precip_locations",
+            Asset(
+                href=spm.collection_asset(self.id, "max_precip_locations.geojson"),
+                title="Max Precipitation Locations",
+                description="Feature collection of max precipitation locations from each storm event.",
                 media_type=MediaType.GEOJSON,
                 roles=["storm_summary"],
             ),
@@ -581,6 +641,7 @@ def storm_search(
         if not os.path.exists(item_dir):
             os.makedirs(item_dir)
         event_item.aorc_thumbnail(scale_max=scale_max)
+        event_item.max_precip_point()
         event_item.save_object(dest_href=catalog.spm.collection_item(collection_id, event_item.id))
         return event_item
     else:
@@ -1096,7 +1157,8 @@ def new_collection(
         collection = storm_catalog.add_rank_to_collection(collection_id, top_events)
 
     collection.add_summary_stats(storm_catalog.spm)
-    collection.event_feature_collection(storm_catalog.spm, min_precip_threshold)
+    collection.watershed_centroid_feature_collection(storm_catalog.spm)
+    collection.max_precip_feature_collection(storm_catalog.spm)
 
     storm_catalog.add_collection_to_catalog(collection, override=True)
     storm_catalog.save_catalog()
