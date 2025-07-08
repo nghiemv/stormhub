@@ -1,3 +1,15 @@
+"""Creates dss files from a given watershed for each event in a metadata json formatted like this:
+{
+  "1988-09-13": {
+    "event_id": "236",
+    "st_number": "st5"
+  },
+  "1993-11-14": {
+    "event_id": "190",
+    "st_number": "st5"
+  }
+}"""
+
 import os
 import json
 from datetime import datetime
@@ -35,7 +47,7 @@ def process_storm_events(storms: dict, dss_dir: str, aoi_path: str, aoi_name: st
 
 
 if __name__ == "__main__":
-    json_path = "storm_events_redo.json"
+    json_path = "storm_event.json"
     dss_dir = "dss_outputs"
     aoi_path = "trinity-transpo-area-v01.geojson"
     aoi_name = "TRINITY"
