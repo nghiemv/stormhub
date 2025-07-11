@@ -1,4 +1,4 @@
-"""Creates dss files from a given watershed for each event in a metadata json formatted like this:
+"""Creates dss files from a given watershed for each event in a metadata json formatted in the following way:
 {
   "1988-09-13": {
     "event_id": "236",
