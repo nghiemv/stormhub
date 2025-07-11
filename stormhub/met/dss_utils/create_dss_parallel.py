@@ -1,4 +1,5 @@
-"""Creates dss files using multithreading for efficiency from a given watershed for each event in a metadata json formatted in the following way:
+"""Creates dss files using multithreading for efficiency from a given watershed for each event in a metadata json formatted in the following way.
+
 {
   "1988-09-13": {
     "event_id": "236",
@@ -8,7 +9,8 @@
     "event_id": "190",
     "st_number": "st5"
   }
-}"""
+}.
+"""
 
 import os
 import json
@@ -68,6 +70,7 @@ def process_storm(date, attrs, dss_dir, aoi_path, aoi_name):
 
 
 def main(json_path, dss_dir, aoi_path, aoi_name):
+    """Create dss files in parallel."""
     with open(json_path) as f:
         storms = json.load(f)
 

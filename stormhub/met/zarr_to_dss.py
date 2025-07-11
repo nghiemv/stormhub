@@ -284,10 +284,7 @@ def create_gridded_data(
 
 
 def interpolate_nan_values(ds: xr.DataArray) -> xr.DataArray:
-    """
-    Interpolate missing NaN values in a DataArray along the 'latitude' and 'longitude' dimensions
-    using linear interpolation. Averages the results from both directions and fills remaining NaNs.
-    """
+    """Interpolate missing NaN values in a DataArray along the 'latitude' and 'longitude' dimensions using linear interpolation. Averages the results from both directions and fills remaining NaNs."""
     ds2_rechunked = ds.chunk({"latitude": -1, "longitude": -1})
 
     interpolated_lon = ds2_rechunked.interpolate_na(dim="longitude", method="linear")
@@ -312,11 +309,7 @@ def get_s3_zarr_data(
     variables_of_interest: List[str],
     interp_nan_vals: bool = True,
 ) -> xr.Dataset:
-    """
-    Load and processe Zarr datasets from S3, clipping them to a given area of interest (AOI),
-    filter by time and variables, and optionally interpolates missing values.
-    """
-
+    """Load and processe Zarr datasets from S3, clipping them to a given area of interest (AOI), filter by time and variables, and optionally interpolates missing values."""
     s3 = s3fs.S3FileSystem(anon=True)
     fileset = [s3fs.S3Map(root=path, s3=s3, check=False) for path in s3_paths]
     ds = xr.open_mfdataset(fileset, engine="zarr", chunks="auto", consolidated=True)

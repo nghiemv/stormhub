@@ -1,4 +1,5 @@
-"""Creates dss files from a given watershed for each event in a metadata json formatted in the following way:
+"""Creates dss files from a given watershed for each event in a metadata json formatted in the following way.
+
 {
   "1988-09-13": {
     "event_id": "236",
@@ -8,7 +9,8 @@
     "event_id": "190",
     "st_number": "st5"
   }
-}"""
+}.
+"""
 
 import os
 import json

@@ -19,7 +19,8 @@ def list_dss_files(bucket_name, prefix):
     """
     List all .dss files located directly under the specified S3 bucket and prefix.
 
-    Yields:
+    Yields
+    ------
         str: S3 key for each .dss file found.
     """
     response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
@@ -30,8 +31,7 @@ def list_dss_files(bucket_name, prefix):
 
 
 def check_dss_file(s3_key, bucket_name, download_dir):
-    """Downloads and validates given dss s3 key."""
-
+    """Download and validate given dss s3 key."""
     filename = os.path.join(download_dir, os.path.basename(s3_key))
     s3.download_file(bucket_name, s3_key, filename)
 
@@ -57,7 +57,7 @@ def check_dss_file(s3_key, bucket_name, download_dir):
 
 
 def main(bucket_name, prefix, download_dir):
-
+    """Check dss files."""
     os.makedirs(download_dir, exist_ok=True)
 
     for dss_key in list_dss_files(bucket_name, prefix):
@@ -68,7 +68,6 @@ def main(bucket_name, prefix, download_dir):
 
 
 if __name__ == "__main__":
-
     bucket_name = "trinity-pilot"
     prefix = "stac/prod-support/conformance/storm-catalog/storms/"
     download_dir = "dss_downloads"

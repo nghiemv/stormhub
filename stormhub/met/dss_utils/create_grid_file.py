@@ -1,4 +1,5 @@
-"""Creates grid file from metadata json created by extract_dss_metadata.py and add_coords_to_metadata.py in format similar to this:
+"""Creates grid file from metadata json created by extract_dss_metadata.py and add_coords_to_metadata.py in format in the following way.
+
 {
   "19790222_72hr_st1_r265.dss": {
     "precip_pathname": "/SHG4K/TRINITY/PRECIPITATION/22FEB1979:0000/22FEB1979:0100/AORC/",
@@ -15,7 +16,7 @@
     "rank": "r118",
     "storm_center_lon": -87.535,
     "storm_center_lat": 32.4662
-  },
+  }.
 """
 
 import json
@@ -27,7 +28,8 @@ from stormhub.logger import initialize_logger
 initialize_logger()
 
 
-def parse_date_from_path(path):
+def parse_date_from_path(path: str):
+    """Parse date from dss path."""
     try:
         return datetime.strptime(path.strip("/").split("/")[3], "%d%b%Y:%H%M").date()
     except Exception:
@@ -35,11 +37,13 @@ def parse_date_from_path(path):
 
 
 def transform_coords(lon, lat, transformer):
+    """Transform given coords and return formatted storm center line."""
     x, y = transformer.transform(lon, lat)
     return f"     Storm Center X: {x}\n", f"     Storm Center Y: {y}\n"
 
 
 def build_lines(dss_data, transformer, defaults):
+    """Build grid file lines."""
     lines = [
         "Grid Manager: T Transpose\n",
         "     Version: 4.11\n",
@@ -60,7 +64,6 @@ def build_lines(dss_data, transformer, defaults):
             continue
 
         for grid_type, path in [("Precipitation", precip_path), ("Temperature", temp_path)]:
-
             lines.append(f"Grid: {dss_file.replace('.dss', '')}\n")
             lines.append(f"     Grid Type: {grid_type}\n")
             lines.append(f"     Last Modified Date: {defaults['modified_date']}\n")
@@ -107,8 +110,6 @@ if __name__ == "__main__":
         'AXIS["(N)",north,ORDER[2],LENGTHUNIT["US survey foot",0.304800609601219,ID["EPSG",9003]]]]'
     )
 
-    transformer = Transformer.from_crs("EPSG:4326", output_crs, always_xy=True)
-
     defaults = {
         "modified_date": "23 May 2025",
         "modified_time": "16:30:15",
@@ -117,6 +118,8 @@ if __name__ == "__main__":
         "variant": "Variant-1",
         "use_lookup": "No",
     }
+
+    transformer = Transformer.from_crs("EPSG:4326", output_crs, always_xy=True)
 
     with open(metadata_path) as f:
         dss_data = json.load(f)

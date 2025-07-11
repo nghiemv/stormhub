@@ -1,5 +1,4 @@
-"""Script to extract metadata from a directory of local dss files including the first precipitation and temperature path names,
-the rank, and the stormtype."""
+"""Script to extract metadata from a directory of local dss files including the first precipitation and temperature path names the rank, and the stormtype."""
 
 import os
 import json
@@ -9,7 +8,7 @@ from datetime import datetime
 
 
 def parse_d_part(d_part):
-    """Converts D part of dss path to datetime."""
+    """Convert D part of dss path to datetime."""
     try:
         return datetime.strptime(d_part, "%d%b%Y:%H%M")
     except Exception:
@@ -17,7 +16,7 @@ def parse_d_part(d_part):
 
 
 def extract_storm_type_and_rank(filename):
-    """Strips the storm type and rank given a dss path in format yyymmdd_72hr_st(x)_r(xxx).dss ."""
+    """Strip the storm type and rank given a dss path in format yyymmdd_72hr_st(x)_r(xxx).dss ."""
     match = re.search(r"_([^_]+)_(r\d+)\.dss$", filename)
     storm_type = match.group(1)
     rank = match.group(2)
@@ -86,8 +85,7 @@ def generate_dss_metadata(dss_dir, output_path):
 
 
 if __name__ == "__main__":
-
-    dss_dir = r"C:\Users\sjanke\code\stormhub\dss_utils\dss_downloads"  # directory of local dss files
+    dss_dir = "<path_to>/dss_downloads"  # directory of local dss files
     output_path = "dss_metadata.json"
 
     generate_dss_metadata(dss_dir, output_path)
