@@ -20,12 +20,6 @@ from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from stormhub.met.zarr_to_dss import noaa_zarr_to_dss, NOAADataVariable
 
-logging.basicConfig(
-    filename="my_log_file.log",
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-
 
 def setup_logging():
     """Ensure each process sets up its own logging to file."""
