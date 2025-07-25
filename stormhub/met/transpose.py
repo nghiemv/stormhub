@@ -186,8 +186,8 @@ class Transpose:
                     combined_mask = np.logical_and(self.watershed_mask_clipped, data_mask)
                     if np.array_equal(combined_mask, self.watershed_mask_clipped):
                         shifts.append((x_delta, y_delta))
-                    y_delta += 1
-                x_delta += 1
+                    y_delta += 4
+                x_delta += 4
                 y_delta = min_y_delta
             self._valid_shifts = shifts
 

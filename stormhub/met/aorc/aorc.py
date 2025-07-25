@@ -241,6 +241,14 @@ class AORCItem(Item):
             self._transposed_watershed.centroid,
         )
 
+    def max_precip_point(self):
+        """Add max precipitation location coordinates to item properties."""
+        precip_ds = self.sum_aorc["APCP_surface"].compute()
+        max_idx = precip_ds.argmax(dim=["latitude", "longitude"])
+        lat = precip_ds.latitude[max_idx["latitude"]].item()
+        lon = precip_ds.longitude[max_idx["longitude"]].item()
+        self.properties["aorc:max_precip_location"] = {"latitude": round(lat, 4), "longitude": round(lon, 4)}
+
     def aorc_thumbnail(
         self,
         scale_max: float,
