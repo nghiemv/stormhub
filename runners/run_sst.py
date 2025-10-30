@@ -35,13 +35,13 @@ if __name__ == "__main__":
     )
 
     # All Collection Args
-    start_date = "2000-04-01"
-    end_date = "2000-04-10"
+    start_date = "2000-01-01"
+    end_date = "2001-01-01"
     top_n_events = 10
 
     # Collection Args
     storm_duration_hours = 72
-    min_precip_threshold = 0.1
+    min_precip_threshold = 1.5
     storm_collection = new_collection(
         storm_catalog,
         start_date,
@@ -49,7 +49,7 @@ if __name__ == "__main__":
         storm_duration_hours,
         min_precip_threshold,
         top_n_events,
-        check_every_n_hours=6,
+        check_every_n_hours=24,
         num_workers=10,
     )
     end_time = time.time()
