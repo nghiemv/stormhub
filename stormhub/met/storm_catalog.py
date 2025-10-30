@@ -1101,7 +1101,7 @@ def new_collection(
     storm_duration: int = 72,
     min_precip_threshold: float = 1.0,
     top_n_events: int = 5,
-    check_every_n_hours: int = 6,
+    check_every_n_hours: int = 24,
     specific_dates: list = None,
     num_workers: int = None,
     with_tb: bool = False,
