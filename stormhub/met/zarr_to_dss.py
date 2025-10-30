@@ -3,7 +3,7 @@
 from datetime import datetime, timedelta
 from enum import Enum
 import math
-from typing import List, Tuple, Literal
+from typing import List, Tuple, Literal, Dict
 from affine import Affine
 from hecdss import HecDss, gridded_data
 import numpy as np
@@ -13,6 +13,13 @@ from geopandas import GeoDataFrame
 import s3fs
 import xarray as xr
 from stormhub.met.consts import NOAA_AORC_S3_BASE_URL, KM_TO_M_CONVERSION_FACTOR, SHG_WKT
+import logging
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
 
 
 class MeasurementType(Enum):
@@ -151,28 +158,44 @@ def get_lower_left_xy(
     return (lower_left_x, lower_left_y)
 
 
-def convert_temperature_dataset(data: xr.Dataset) -> xr.Dataset:
-    """Convert temperature in Kelvin to the desired output_unit."""
+def convert_temperature_dataset(data: xr.Dataset, chunk_size: int = 144) -> xr.Dataset:
+    """Convert temperature in Kelvin to the desired output_unit. Utilizes chunking to save memory."""
     output_unit = NOAADataVariable.TMP.measurement_unit
     data_unit = data.units
     if data_unit != "K":
         raise ValueError(f"Expected temperature data in Kelvin, got measurement unit of {data_unit} instead")
+
     if output_unit != "K":
         data_shape = data.shape
         c_degrees_difference = np.full(data_shape, 273.15)
-        if output_unit == "DEG C":
-            data = np.subtract(data, c_degrees_difference)
-        elif output_unit == "DEG F":
-            c_data = np.subtract(data, c_degrees_difference)
-            scale_difference = np.full(data_shape, 9 / 5)
-            scale_data = np.multiply(c_data, scale_difference)
-            f_difference = np.full(data_shape, 32)
-            f_data = np.add(scale_data, f_difference)
-            data = f_data
-        else:
-            raise ValueError(
-                f"Temperature conversion only supported from Kelvin (K) to Celsius (DEG C) or Farenheit (DEG F); got output unit of {output_unit} instead"
-            )
+        num_chunks = (data_shape[0] + chunk_size - 1) // chunk_size
+
+        converted_chunks = []
+
+        for i in range(num_chunks):
+            start = i * chunk_size
+            end = min((i + 1) * chunk_size, data_shape[0])
+
+            data_chunk = data.isel(time=slice(start, end))
+
+            if output_unit == "DEG C":
+                converted_chunk = data_chunk - c_degrees_difference[start:end]
+            elif output_unit == "DEG F":
+                c_data_chunk = data_chunk - c_degrees_difference[start:end]
+                scale_difference = np.full(c_data_chunk.shape, 9 / 5)
+                scale_data_chunk = c_data_chunk * scale_difference
+                f_difference = np.full(c_data_chunk.shape, 32)
+                converted_chunk = scale_data_chunk + f_difference
+            else:
+                raise ValueError(
+                    f"Temperature conversion only supported from Kelvin (K) to Celsius (DEG C) or Fahrenheit (DEG F); got output unit of {output_unit} instead"
+                )
+
+            converted_chunks.append(converted_chunk)
+
+        # Concatenate all converted chunks along the 'time' dimension
+        data = xr.concat(converted_chunks, dim="time")
+
     return data
 
 
@@ -260,8 +283,31 @@ def create_gridded_data(
     return gd
 
 
+def interpolate_nan_values(ds: xr.DataArray) -> xr.DataArray:
+    """Interpolate missing NaN values in a DataArray along the 'latitude' and 'longitude' dimensions using linear interpolation. Averages the results from both directions and fills remaining NaNs."""
+    ds2_rechunked = ds.chunk({"latitude": -1, "longitude": -1})
+
+    interpolated_lon = ds2_rechunked.interpolate_na(dim="longitude", method="linear")
+    interpolated_lat = ds2_rechunked.interpolate_na(dim="latitude", method="linear")
+
+    both_valid = (~interpolated_lon.isnull()) & (~interpolated_lat.isnull())
+    average = (interpolated_lon + interpolated_lat) / 2
+
+    interpolated_combined = xr.where(both_valid, average, interpolated_lon.combine_first(interpolated_lat))
+    interpolated_combined.rio.write_crs(ds.rio.crs, inplace=True)
+
+    interpolated_combined.attrs["units"] = "K"
+
+    return interpolated_combined
+
+
 def get_s3_zarr_data(
-    s3_paths: List[str], aoi_gdf: GeoDataFrame, start_dt: datetime, end_dt: datetime, variables_of_interest: List[str]
+    s3_paths: List[str],
+    aoi_gdf: GeoDataFrame,
+    start_dt: datetime,
+    end_dt: datetime,
+    variables_of_interest: List[str],
+    interp_nan_vals: bool = True,
 ) -> xr.Dataset:
     """
     Read a multifile dataset from the specified S3 paths, filters it based on the area of interest (AOI) and the time range, extracts only the variables of interest and returns an xarray Dataset.
@@ -277,22 +323,50 @@ def get_s3_zarr_data(
     fileset = [s3fs.S3Map(root=path, s3=s3, check=False) for path in s3_paths]
     ds = xr.open_mfdataset(fileset, engine="zarr", chunks="auto", consolidated=True)
 
-    # subset data to only the variables
+    # Select only variables of interest
     if variables_of_interest:
         ds = ds[variables_of_interest]
 
-    # reproject aoi to crs of dataset
+    # Reproject AOI and clip spatially
     aoi_gdf = aoi_gdf.to_crs(ds.rio.crs)
     aoi_shape = aoi_gdf.geometry.iloc[0]
-
-    # get a rough subsection of the dataset based on time and aoi in order to reduce it's size
-    # this results in a speed improvement for rio.clip if the xarray.Dataset is sufficiently sized
     bounds = aoi_shape.bounds
     ds = ds.sel(
         time=slice(start_dt, end_dt), longitude=slice(bounds[0], bounds[2]), latitude=slice(bounds[1], bounds[3])
     )
+    if interp_nan_vals:
+        # Interpolate missing values for each variable
+        for var in ds.data_vars:
+            data_var = ds[var]
 
-    # clip ds to exact shape
+            # Compute valid mask
+            valid_mask = ~data_var.isnull().all("time")
+
+            # Determine which time slices need interpolation
+            nan_mask = data_var.isnull() & valid_mask
+            needs_interp = nan_mask.any(dim=["latitude", "longitude"]).compute()
+
+            if not needs_interp.any():
+                logging.info(f"All data for {var} is valid")
+                continue
+
+            # Interpolate time slices
+            interpolated_slices = []
+            for i, t in enumerate(data_var.time.values):
+                if needs_interp[i]:
+                    logging.info(f"Missing data for var {var} at time {t}. Interpolating...")
+                    slice_ = data_var.sel(time=t)
+                    interpolated = interpolate_nan_values(slice_)
+                    interpolated_slices.append(interpolated.expand_dims(time=[t]))
+
+            # Combine interpolated slices with original
+            if interpolated_slices:
+                interpolated_ds = xr.concat(interpolated_slices, dim="time")
+                data_var = data_var.combine_first(interpolated_ds)
+
+            ds[var] = data_var
+
+    # Final spatial clip
     ds = ds.rio.clip([aoi_shape], drop=True, all_touched=True)
 
     return ds
@@ -322,7 +396,26 @@ def write_to_dss(
     """
     dss = HecDss(output_dss_path)
     output_resolution_m = output_resolution_km * KM_TO_M_CONVERSION_FACTOR
-    data: xr.DataArray = data.rio.reproject(SHG_WKT, resolution=output_resolution_m)
+
+    logging.info(f"reprojecting dataset")
+    times = data.time.values
+
+    if len(times) <= 144:
+        data: xr.DataArray = data.rio.reproject(SHG_WKT, resolution=output_resolution_m)
+    else:
+        # For larger datasets, chunking is used to avoid memory issues
+        logging.info(f"Chunking dataset for reprojection")
+        time_chunk_size = 144
+        reprojected_chunks = []
+
+        for i in range(0, len(times), time_chunk_size):
+            chunk_times = times[i : i + time_chunk_size]
+            chunk = data.sel(time=chunk_times)
+            chunk = chunk.rio.reproject(SHG_WKT, resolution=output_resolution_m)
+            reprojected_chunks.append(chunk)
+
+        data = xr.concat(reprojected_chunks, dim="time")
+
     lower_x, lower_y = get_lower_left_xy(data, output_resolution_m)
 
     for time_step in data.time:
@@ -330,6 +423,7 @@ def write_to_dss(
         time_step_data = np.flipud(time_step_data.to_numpy())
 
         date = Timestamp(time_step.values).to_pydatetime()
+        logging.info(f"processing timestep: {date}")
         start_dt_str, end_dt_str = date_range_dss_path_format(date, param_measurement_type)
 
         path = DSSPath(
@@ -363,32 +457,40 @@ def noaa_zarr_to_dss(
     aoi_geometry_gpkg_path: str,
     aoi_name: str,
     storm_start: datetime,
-    storm_duration: int,
-    variables_of_interest: List[NOAADataVariable],
+    variable_duration_map: Dict[NOAADataVariable, int],
 ):
     """Given a geometry and datetime information about a storm, writes variables of interest from NOAA dataset to DSS."""
     # arrange parameters
+    all_variables = list(variable_duration_map.keys())
+    min_start = storm_start + timedelta(hours=1)  # make exclusive
+    max_end = storm_start + timedelta(hours=max(variable_duration_map.values()))
+    aorc_paths = get_aorc_paths(min_start, max_end)
     aoi_gdf = gpd.read_file(aoi_geometry_gpkg_path)
-    storm_end = storm_start + timedelta(hours=storm_duration)
-    storm_start += timedelta(hours=1)  # do this to make start time exclusive
-    aorc_paths = get_aorc_paths(storm_start, storm_end)
-    voi_keys = [voi.value for voi in variables_of_interest]
+    voi_keys = [v.value for v in all_variables]
 
     # get aorc data
-    aorc_data = get_s3_zarr_data(aorc_paths, aoi_gdf, storm_start, storm_end, voi_keys)
+    logging.info("Getting aorc data")
+    aorc_data = get_s3_zarr_data(aorc_paths, aoi_gdf, min_start, max_end, voi_keys)
+    logging.info("Successfully retrieved aorc data")
 
     # write to dss
-    for data_variable in variables_of_interest:
-        data = aorc_data[data_variable.value]
+    for data_variable, duration in variable_duration_map.items():
+        var_start = storm_start + timedelta(hours=1)
+        var_end = storm_start + timedelta(hours=duration)
+        data = aorc_data[data_variable.value].sel(time=slice(var_start, var_end))
+
         if data_variable == NOAADataVariable.TMP:
+            logging.info("converting temperature dataset")
             data = convert_temperature_dataset(data)
+            logging.info("Successfully converted temperature dataset")
+        logging.info("writing to dss")
         write_to_dss(
-            output_dss_path,
-            data=aorc_data[data_variable.value],
+            output_dss_path=output_dss_path,
+            data=data,
             aoi_name=aoi_name,
             param_name=data_variable.dss_variable_title,
             param_measurement_type=data_variable.measurement_type,
             param_measurement_unit=data_variable.measurement_unit,
-            output_resolution_km=1,
+            output_resolution_km=4,
             data_version="AORC",
         )

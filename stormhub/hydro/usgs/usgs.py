@@ -64,8 +64,8 @@ class UsgsGage(Item):
         }
         start_datetime, end_datetime = cls.start_end_dates(gage_number)
         if properties["daily_values"]["begin_date"] is None and properties["daily_values"]["end_date"] is None:
-            properties["daily_values"]["end_date"] = end_datetime.strftime("%Y-%m-%d")
-            properties["daily_values"]["begin_date"] = start_datetime.strftime("%Y-%m-%d")
+            properties["daily_values"]["end_date"] = end_datetime.strftime("%Y-%m-%d") if end_datetime else None
+            properties["daily_values"]["begin_date"] = start_datetime.strftime("%Y-%m-%d") if start_datetime else None
 
         logging.info(f"Creating UsgsGage {gage_number} {site_data['station_nm']}")
 
@@ -115,8 +115,10 @@ class UsgsGage(Item):
         endDate = datetime.now().strftime("%Y-%m-%d")
         dv = nwis.get_dv(gage_id, startDate, endDate)[0]
         dv_sorted = dv.sort_index()
-
-        return dv_sorted.index.min().to_pydatetime(), dv_sorted.index.max().to_pydatetime()
+        if len(dv_sorted) > 1:
+            return dv_sorted.index.min().to_pydatetime(), dv_sorted.index.max().to_pydatetime()
+        else:
+            return None, None
 
     def get_peaks(self, item_dir: str, make_plots: bool = True):
         """Retrieve annual maximum series from NWIS and make the plots associated with those values."""
