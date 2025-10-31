@@ -737,8 +737,9 @@ def multi_processor(
     count = len(event_dates)
 
     # Process in smaller batches to avoid memory buildup
-    # Use smaller batch size to limit memory: only queue num_workers tasks at a time
-    batch_size = num_workers  # Changed from num_workers * 2 to just num_workers
+    # Limit concurrent tasks to prevent OOM, especially with threads loading large datasets
+    batch_size = max(min(num_workers // 3, 10), 2) if use_threads else num_workers
+    logging.info("Processing in batches of %d", batch_size)
 
     with executor_class(max_workers=num_workers) as executor:
         for i in range(0, len(event_dates), batch_size):
@@ -803,6 +804,7 @@ def collect_event_stats(
         os.makedirs(collection_dir)
 
     if not num_workers and not use_threads:
+        # For processes: limited by CPU cores
         if os.cpu_count() > 2:
             num_workers = os.cpu_count() - 2
         else:
@@ -841,6 +843,7 @@ def create_items(
     collection_id: str = None,
     storm_duration: int = 72,
     num_workers: int = None,
+    use_threads: bool = True,
     with_tb: bool = False,
 ) -> List:
     """
@@ -852,6 +855,7 @@ def create_items(
         collection_id (str, optional): The ID of the collection.
         storm_duration (int): The duration of the storm.
         num_workers (int, optional): Number of workers to use.
+        use_threads (bool): Whether to use threads instead of processes.
         with_tb (bool): Whether to include traceback in error logs.
 
     Returns
@@ -870,11 +874,16 @@ def create_items(
     count = len(event_dates)
 
     if not num_workers:
-        num_workers = os.cpu_count()
+        num_workers = 4
+
+    if use_threads:
+        executor_class = ThreadPoolExecutor
+    else:
+        executor_class = ProcessPoolExecutor
 
     storm_data = [(e["storm_date"], e["por_rank"]) for e in event_dates]
 
-    with ProcessPoolExecutor(max_workers=num_workers) as executor:
+    with executor_class(max_workers=num_workers) as executor:
         futures = [
             executor.submit(
                 storm_search,
@@ -1104,6 +1113,7 @@ def new_collection(
     check_every_n_hours: int = 24,
     specific_dates: list = None,
     num_workers: int = None,
+    use_threads: bool = True,
     with_tb: bool = False,
     create_new_items: bool = True,
 ):
@@ -1120,6 +1130,7 @@ def new_collection(
         check_every_n_hours (int): The interval in hours to check for storms.
         specific_dates (list, optional): Specific dates to include.
         num_workers (int, optional): Number of cpu's to use during processing.
+        use_threads (bool): Whether to use threads instead of processes.
         with_tb (bool): Whether to include traceback in error logs.
         create_new_items (bool): Create items (or skip if items exist)
     """
@@ -1155,7 +1166,13 @@ def new_collection(
     if dates:
         logging.info("Collecting event stats for %d dates", len(dates))
         collect_event_stats(
-            dates, storm_catalog, collection_id, storm_duration, num_workers=num_workers, with_tb=with_tb
+            dates,
+            storm_catalog,
+            collection_id,
+            storm_duration,
+            num_workers=num_workers,
+            with_tb=with_tb,
+            use_threads=use_threads,
         )
     stats_csv = os.path.join(storm_catalog.spm.collection_dir(collection_id), "storm-stats.csv")
     try:
@@ -1165,11 +1182,13 @@ def new_collection(
         logging.error("No events at threshold `min_precip_threshold` %d: %s", min_precip_threshold, e)
         return
 
+    logging.info("Ranking storm events and selecting top %d events", top_n_events)
     ranked_data = analyzer.rank_and_save(collection_id, storm_catalog.spm)
 
     top_events = ranked_data[ranked_data["por_rank"] <= top_n_events].copy()
 
     if create_new_items:
+        logging.info("Creating items for top %d events", len(top_events))
         event_items = create_items(
             top_events.to_dict(orient="records"),
             storm_catalog,
@@ -1182,11 +1201,13 @@ def new_collection(
     else:
         collection = storm_catalog.add_rank_to_collection(collection_id, top_events)
 
+    logging.info("Adding summary stats and features to collection.")
     collection.add_summary_stats(storm_catalog.spm)
     collection.watershed_centroid_feature_collection(storm_catalog.spm)
     collection.max_precip_feature_collection(storm_catalog.spm)
 
     storm_catalog.add_collection_to_catalog(collection, override=True)
+    logging.info("Saving catalog and collection.")
     storm_catalog.save_catalog()
     return collection
 
