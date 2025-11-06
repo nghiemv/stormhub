@@ -6,7 +6,7 @@ import os
 import traceback
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from typing import Any, List, Union
+from typing import Any, List, Union, Dict
 import gc
 
 import pandas as pd
@@ -18,6 +18,7 @@ from stormhub.hydro_domain import HydroDomain
 from stormhub.logger import initialize_logger
 from stormhub.met.analysis import StormAnalyzer
 from stormhub.met.aorc.aorc import AORCItem, valid_spaces_item
+from stormhub.met.zarr_to_dss import noaa_zarr_to_dss, NOAADataVariable
 from stormhub.utils import (
     STORMHUB_REF_LINK,
     StacPathManager,
@@ -843,7 +844,7 @@ def create_items(
     collection_id: str = None,
     storm_duration: int = 72,
     num_workers: int = None,
-    use_threads: bool = True,
+    use_threads: bool = False,
     with_tb: bool = False,
 ) -> List:
     """
@@ -1053,6 +1054,79 @@ def find_missing_storm_dates(file_path: str, start_date: str, stop_date: str, ev
 
     return missing_datetimes
 
+def get_events_collection(catalog: pystac.Catalog):
+    "Find storm events collection from given Catalog."
+    
+    for collection in catalog.get_all_collections():
+        if '-events' in collection.id:
+            return collection
+
+        raise ValueError(f"Could not find events collection in catalog: {catalog.id}.")
+
+def get_transposition_item(catalog: pystac.Catalog, use_valid_region: bool= False):
+    "Find transposition region item from given Catalog."
+
+    for item in catalog.get_all_items():
+        if 'transpo' in item.id:
+            if use_valid_region and 'valid' in item.id:
+                return item
+            elif not use_valid_region and 'valid' not in item.id:
+                return item
+
+    raise ValueError(f"Could not find transposition region item in catalog: {catalog.id}.")
+
+def add_storm_dss_files(catalog: pystac.catalog, aoi_name: str = None, use_valid_region: bool = False, variable_duration_map: Dict[NOAADataVariable, int] =  None):
+    """
+    Add dss files containing meteorological data to all storm items in events collection.
+
+    Args:
+        catalog (Union[str | Catalog]): The storm catalog or path to the catalog file.
+        aoi_name (str, optional): Optional aoi name for part B of dss file. If None then the catalog ID is used.
+        use_valid_region (bool, optional): If True, the gridded DSS data will be confined to the valid transposition region. If False, the the data uses the entire transposition region. Defaults to False.
+        variable_duration_map (Dict[NOAADataVariable, int], Optional): Optional variable map to include multiple variables and/or different durations for dss creation. If None is given, only precipitation is used at the duration between the storm items start and end time.
+        
+    """
+    if isinstance(catalog, str):
+        catalog = pystac.read_file(catalog)
+
+    events_collection = get_events_collection(catalog)
+    transpo_item = get_transposition_item(catalog, use_valid_region)
+    transpo_href = transpo_item.get_self_href()
+
+    if aoi_name is None:    
+        aoi_name = catalog.id
+
+    for item in events_collection.get_items():
+        try:
+            item_href = item.get_self_href()
+            item_dir = os.path.dirname(item_href)
+
+            full_start_date = item.properties['start_datetime']
+            start_date_dt = datetime.strptime(full_start_date, '%Y-%m-%dT%H:%M:%SZ')
+            start_date = start_date_dt.strftime('%Y%m%d')
+
+            dss_fn = f"{start_date}.dss"
+            dss_output_path = os.path.join(item_dir, dss_fn)
+
+            if variable_duration_map is None:
+                full_end_date = item.properties['end_datetime']
+                end_date_dt = datetime.strptime(full_end_date, '%Y-%m-%dT%H:%M:%SZ')
+                time_difference = end_date_dt - start_date_dt
+                duration_hours = time_difference.total_seconds() / 3600
+
+                variable_duration_map = {NOAADataVariable.APCP: duration_hours}
+
+            noaa_zarr_to_dss(dss_output_path,
+                            transpo_href,
+                            aoi_name,
+                            start_date_dt,
+                            variable_duration_map)
+            
+            item.add_asset(dss_fn, Asset(dss_output_path, dss_fn, description="DSS file containing meteorological data for storm period.", media_type='application/x-dss', roles="data"))
+            item.save_object()
+            logging.info(f'Successfully saved storm dss file to: {dss_output_path}')
+        except Exception as e:
+            logging.error(f'Could not create dss file for item: {item.id} with error: {e}')
 
 def new_catalog(
     catalog_id: str,
@@ -1113,7 +1187,7 @@ def new_collection(
     check_every_n_hours: int = 24,
     specific_dates: list = None,
     num_workers: int = None,
-    use_threads: bool = True,
+    use_threads: bool = False,
     with_tb: bool = False,
     create_new_items: bool = True,
 ):
@@ -1195,6 +1269,7 @@ def new_collection(
             storm_duration=storm_duration,
             with_tb=with_tb,
             num_workers=num_workers,
+            use_threads=use_threads,
         )
         collection = storm_catalog.new_collection_from_items(collection_id, event_items)
 
