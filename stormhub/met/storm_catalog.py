@@ -14,6 +14,7 @@ import pystac
 from pystac import Asset, Collection, Item, Link, MediaType
 from shapely.geometry import mapping, shape, Point
 
+import matplotlib
 from stormhub.hydro_domain import HydroDomain
 from stormhub.logger import initialize_logger
 from stormhub.met.analysis import StormAnalyzer
@@ -879,6 +880,8 @@ def create_items(
 
     if use_threads:
         executor_class = ThreadPoolExecutor
+        # Force a non‑interactive backend (Agg) when threading. 
+        matplotlib.use("Agg")
     else:
         executor_class = ProcessPoolExecutor
 
