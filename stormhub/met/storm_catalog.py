@@ -1078,7 +1078,7 @@ def get_transposition_item(catalog: pystac.Catalog, use_valid_region: bool= Fals
 
     raise ValueError(f"Could not find transposition region item in catalog: {catalog.id}.")
 
-def add_storm_dss_files(catalog: pystac.catalog, aoi_name: str = None, use_valid_region: bool = False, variable_duration_map: Dict[NOAADataVariable, int] =  None):
+def add_storm_dss_files(catalog: pystac.catalog, aoi_name: str = None, use_valid_region: bool = False, variable_duration_map: Dict[NOAADataVariable, int] =  None, dss_output_dir: str = None):
     """
     Add dss files containing meteorological data to all storm items in events collection.
 
@@ -1087,6 +1087,7 @@ def add_storm_dss_files(catalog: pystac.catalog, aoi_name: str = None, use_valid
         aoi_name (str, optional): Optional aoi name for part B of dss file. If None then the catalog ID is used.
         use_valid_region (bool, optional): If True, the gridded DSS data will be confined to the valid transposition region. If False, the the data uses the entire transposition region. Defaults to False.
         variable_duration_map (Dict[NOAADataVariable, int], Optional): Optional variable map to include multiple variables and/or different durations for dss creation. If None is given, only precipitation is used at the duration between the storm items start and end time.
+        dss_output_dir (str, optional): Optional output directory for dss files. If None, dss files are saved in the same directory as the associated storm item.
         
     """
     if isinstance(catalog, str):
@@ -1101,8 +1102,12 @@ def add_storm_dss_files(catalog: pystac.catalog, aoi_name: str = None, use_valid
 
     for item in events_collection.get_items():
         try:
-            item_href = item.get_self_href()
-            item_dir = os.path.dirname(item_href)
+            if dss_output_dir:
+                item_dir = os.path.abspath(dss_output_dir)
+                os.makedirs(item_dir, exist_ok=True)
+            else:
+                item_href = item.get_self_href()
+                item_dir = os.path.dirname(item_href)
 
             full_start_date = item.properties['start_datetime']
             start_date_dt = datetime.strptime(full_start_date, '%Y-%m-%dT%H:%M:%SZ')
