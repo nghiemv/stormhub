@@ -1,5 +1,5 @@
 from stormhub.logger import initialize_logger
-from stormhub.met.storm_catalog import new_catalog, new_collection
+from stormhub.met.storm_catalog import add_storm_dss_files, new_catalog, new_collection
 import json
 import logging
 import shutil
@@ -83,3 +83,5 @@ if __name__ == "__main__":
     )
     # Add config file as a STAC collection asset
     add_config_to_collection(storm_collection)
+    # Optionally, add DSS files to storm items
+    # add_storm_dss_files(storm_catalog)
