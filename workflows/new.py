@@ -1,5 +1,5 @@
 from stormhub.logger import initialize_logger
-from stormhub.met.storm_catalog import add_storm_dss_files, new_catalog, new_collection
+from stormhub.met.storm_catalog import add_storm_dss_files, create_normal_precip, new_catalog, new_collection
 import json
 import logging
 import shutil
@@ -79,9 +79,15 @@ if __name__ == "__main__":
         storm_duration_hours,
         min_precip_threshold,
         top_n_events,
-        check_every_n_hours=24,
+        use_threads=True, #True for Linux/WSL, False for Windows
+        num_workers=8, # Number of parallel workers
+        check_every_n_hours=48,
     )
     # Add config file as a STAC collection asset
     add_config_to_collection(storm_collection)
+    
     # Optionally, add DSS files to storm items
-    # add_storm_dss_files(storm_catalog)
+    #add_storm_dss_files(storm_catalog)
+    
+    # Optionally, create normal precipitation grid
+    #create_normal_precip(storm_catalog, duration_hours=storm_duration_hours)
