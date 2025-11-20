@@ -8,18 +8,21 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 from datetime import datetime, timedelta
 from typing import Any, List, Union, Dict
 import gc
+import re
 
 import pandas as pd
 import pystac
 from pystac import Asset, Collection, Item, Link, MediaType
 from shapely.geometry import mapping, shape, Point
+import xarray as xr
+import geopandas as gpd
 
 import matplotlib
 from stormhub.hydro_domain import HydroDomain
 from stormhub.logger import initialize_logger
 from stormhub.met.analysis import StormAnalyzer
 from stormhub.met.aorc.aorc import AORCItem, valid_spaces_item
-from stormhub.met.zarr_to_dss import noaa_zarr_to_dss, NOAADataVariable
+from stormhub.met.zarr_to_dss import get_aorc_paths, get_s3_zarr_data, noaa_zarr_to_dss, NOAADataVariable, save_da_as_geotiff
 from stormhub.utils import (
     STORMHUB_REF_LINK,
     StacPathManager,
@@ -257,6 +260,25 @@ class StormCollection(pystac.Collection):
         logging.info("FeatureCollection saved to %s", output_geojson)
         self.save_object(dest_href=spm.collection_file(self.id), include_self_link=False)
 
+    def add_ranked_storms_asset(self, ranked_storms_path: str):
+        """
+        Add ranked storms CSV as an asset to the collection.
+
+        Args:
+            ranked_storms_path (str): Path to the ranked storms CSV file.
+        """
+        self.add_asset(
+            "ranked_storms",
+            Asset(
+                href=ranked_storms_path,
+                title="ranked_storms",
+                description="CSV file containing ranked storm events.",
+                media_type="text/csv",
+                roles=["storm_summary"],
+            ),
+        )
+        logging.info("Added ranked storms asset from %s to collection %s", ranked_storms_path, self.id)
+        self.save_object(dest_href=self.spm.collection_file(self.id), include_self_link=False)
 
 class StormCatalog(pystac.Catalog):
     """
@@ -1057,6 +1079,22 @@ def find_missing_storm_dates(file_path: str, start_date: str, stop_date: str, ev
 
     return missing_datetimes
 
+def find_asset_by_title(collection: Union[pystac.Catalog, pystac.Collection], title: str):
+    """Find an asset with the given title in a STAC collection."""
+    for asset_key, asset in collection.assets.items():
+        if asset.title == title:
+            return asset
+    return None
+
+def parse_duration_from_id(collection_id: str) -> int:
+    """Parse the front number (duration in hours) from a collection ID."""
+    match = re.match(r"(\d+)", collection_id)
+    if match:
+        return int(match.group(1))
+    else:
+        return None
+
+
 def get_events_collection(catalog: pystac.Catalog):
     "Find storm events collection from given Catalog."
     
@@ -1136,6 +1174,81 @@ def add_storm_dss_files(catalog: pystac.catalog, aoi_name: str = None, use_valid
         except Exception as e:
             logging.error(f'Could not create dss file for item: {item.id} with error: {e}')
 
+def create_normal_precip(catalog: pystac.Catalog, output_path: str = None, duration_hours: int = None):
+    """
+    Create a normal precipitation GeoTIFF by averaging precipitation data over the top annual storms for each year.
+
+    Args:
+        catalog (pystac.Catalog): The STAC catalog containing storm data.
+        output_path (str, optional): Path to save the output GeoTIFF. If None is given, it will be saved in the events collection directory.
+        duration_hours (int, optional): Duration of the storm event in hours. If None, it will be parsed from the collection ID.
+    """
+    events_collection = get_events_collection(catalog)
+    transpo_item = get_transposition_item(catalog)
+    transpo_href = transpo_item.get_self_href()
+
+    if duration_hours is None:
+        collection_id = events_collection.id
+        duration_hours = parse_duration_from_id(collection_id)
+        
+        if duration_hours is None:
+            logging.warning("No duration given and could not determine duration hours from collection ID, using default value of 72.")
+            duration_hours = 72
+
+    logging.info(f"Using storm event duration of {duration_hours} hours for normal precipitation calculation.")
+
+    ranked_storms_asset = find_asset_by_title(events_collection, "ranked_storms")
+    if ranked_storms_asset:
+        ranked_storms = pd.read_csv(ranked_storms_asset.href)
+    else:
+        logging.error("No asset with the title 'ranked-storms' found, cant create normal precip.")
+        return
+
+    top_annual_storms = ranked_storms[ranked_storms['annual_rank'] == 1]
+    top_annual_storm_dates = top_annual_storms['storm_date'].tolist()
+    num_years = len(top_annual_storm_dates)
+    logging.info(f"Number of years for normal precipitation calculation: {num_years}")
+
+    if output_path is None:
+        output_path = events_collection.self_href.replace('collection.json', f'normal_precip_{num_years}-years.tif')
+
+    # Precipitation variable map with duration
+    variable_duration_map = {NOAADataVariable.APCP: duration_hours}
+
+    storm_arrays = []
+    for storm_date_str in top_annual_storm_dates:
+        logging.info(f"Processing storm date: {storm_date_str}")
+        try:
+            storm_start = datetime.strptime(storm_date_str, '%Y-%m-%dT%H')
+
+            all_variables = list(variable_duration_map.keys())
+            min_start = storm_start + timedelta(hours=1)  # make exclusive
+            max_end = storm_start + timedelta(hours=max(variable_duration_map.values()))
+            aorc_paths = get_aorc_paths(min_start, max_end)
+            aoi_gdf = gpd.read_file(transpo_href)
+            voi_keys = [v.value for v in all_variables]
+
+            # get aorc data
+            aorc_data = get_s3_zarr_data(aorc_paths, aoi_gdf, min_start, max_end, voi_keys)
+            summed_data = aorc_data.sum(dim='time')
+            
+            da = summed_data['APCP_surface']
+            da = da.expand_dims(storm=[storm_start])
+            da = da.assign_coords(storm_time=('storm', [storm_start]))
+            storm_arrays.append(da)
+        except Exception as e:
+            logging.error(f"Error extracting precip data from storm date {storm_date_str}: {e}")
+            raise
+
+    all_storms_da = xr.concat(storm_arrays, dim='storm')
+    mean_precip_da = all_storms_da.mean(dim='storm')
+
+    logging.info(f"Saving normal precipitation GeoTIFF to {output_path}")
+    save_da_as_geotiff(mean_precip_da, output_path)
+
+    events_collection.add_asset('normal-precipitation', pystac.Asset(output_path, 'normal-precipitation', description="Normal precipitation data containing the average precipitation over the top storms for each year.", media_type='application/geotiff', roles=["data"]))
+    events_collection.save_object()
+    
 def new_catalog(
     catalog_id: str,
     config_file: str,
@@ -1265,7 +1378,7 @@ def new_collection(
         return
 
     logging.info("Ranking storm events and selecting top %d events", top_n_events)
-    ranked_data = analyzer.rank_and_save(collection_id, storm_catalog.spm)
+    ranked_data, ranked_storms_output_path = analyzer.rank_and_save(collection_id, storm_catalog.spm)
 
     top_events = ranked_data[ranked_data["por_rank"] <= top_n_events].copy()
 
@@ -1285,6 +1398,7 @@ def new_collection(
         collection = storm_catalog.add_rank_to_collection(collection_id, top_events)
 
     logging.info("Adding summary stats and features to collection.")
+    collection.add_ranked_storms_asset(ranked_storms_output_path)
     collection.add_summary_stats(storm_catalog.spm)
     collection.watershed_centroid_feature_collection(storm_catalog.spm)
     collection.max_precip_feature_collection(storm_catalog.spm)
