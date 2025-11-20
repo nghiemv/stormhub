@@ -300,9 +300,11 @@ def interpolate_nan_values(ds: xr.DataArray) -> xr.DataArray:
 
     return interpolated_combined
 
-def save_da_as_geotiff(da: xr.DataArray, output_path: str, crs: str = "EPSG:4326", x_dim: str = "longitude", y_dim: str = "latitude"):
-    """Save xarray DataArray as GeoTIFF."""
 
+def save_da_as_geotiff(
+    da: xr.DataArray, output_path: str, crs: str = "EPSG:4326", x_dim: str = "longitude", y_dim: str = "latitude"
+):
+    """Save xarray DataArray as GeoTIFF."""
     da = da.rio.write_crs(crs)
     da.rio.set_spatial_dims(x_dim=x_dim, y_dim=y_dim, inplace=True)
     da.rio.to_raster(output_path, compress="LZW")
