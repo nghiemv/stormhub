@@ -260,7 +260,7 @@ class StormCollection(pystac.Collection):
         logging.info("FeatureCollection saved to %s", output_geojson)
         self.save_object(dest_href=spm.collection_file(self.id), include_self_link=False)
 
-    def add_ranked_storms_asset(self, ranked_storms_path: str):
+    def add_ranked_storms_asset(self, ranked_storms_path: str, spm: StacPathManager):
         """
         Add ranked storms CSV as an asset to the collection.
 
@@ -278,7 +278,7 @@ class StormCollection(pystac.Collection):
             ),
         )
         logging.info("Added ranked storms asset from %s to collection %s", ranked_storms_path, self.id)
-        self.save_object(dest_href=self.spm.collection_file(self.id), include_self_link=False)
+        self.save_object(dest_href=spm.collection_file(self.id), include_self_link=False)
 
 class StormCatalog(pystac.Catalog):
     """
@@ -834,7 +834,7 @@ def collect_event_stats(
         else:
             num_workers = 1
     elif not num_workers and use_threads:
-        num_workers = 15
+        num_workers = 10
 
     output_csv = os.path.join(collection_dir, "storm-stats.csv")
     if use_parallel_processing:
@@ -1197,11 +1197,11 @@ def create_normal_precip(catalog: pystac.Catalog, output_path: str = None, durat
 
     logging.info(f"Using storm event duration of {duration_hours} hours for normal precipitation calculation.")
 
-    ranked_storms_asset = find_asset_by_title(events_collection, "ranked_storms")
-    if ranked_storms_asset:
-        ranked_storms = pd.read_csv(ranked_storms_asset.href)
-    else:
-        logging.error("No asset with the title 'ranked-storms' found, cant create normal precip.")
+    ranked_storms_path = events_collection.self_href.replace('collection.json', f'ranked-storms.csv')
+    try:
+        ranked_storms = pd.read_csv(ranked_storms_path)
+    except Exception as e:
+        logging.error("No ranked storms CSV found.")
         return
 
     top_annual_storms = ranked_storms[ranked_storms['annual_rank'] == 1]
@@ -1398,7 +1398,7 @@ def new_collection(
         collection = storm_catalog.add_rank_to_collection(collection_id, top_events)
 
     logging.info("Adding summary stats and features to collection.")
-    collection.add_ranked_storms_asset(ranked_storms_output_path)
+    collection.add_ranked_storms_asset(ranked_storms_output_path, storm_catalog.spm)
     collection.add_summary_stats(storm_catalog.spm)
     collection.watershed_centroid_feature_collection(storm_catalog.spm)
     collection.max_precip_feature_collection(storm_catalog.spm)
