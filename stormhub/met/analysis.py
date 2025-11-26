@@ -3,6 +3,7 @@
 import datetime
 import logging
 import os
+from typing import Union
 
 import numpy as np
 import pandas as pd
@@ -101,14 +102,14 @@ class StormAnalyzer:
         sorted_indices = np.argsort(self.metrics_df["mean"].values)[::-1]
         return self.metrics_df["storm_date"].dt.strftime("%Y-%m-%dT%H").iloc[sorted_indices].tolist()
 
-    def rank_and_save(self, collection_id: str, spm: StacPathManager) -> pd.DataFrame:
+    def rank_and_save(self, collection_id: str, spm: StacPathManager) -> tuple[pd.DataFrame, str]:
         """Rank storms and save to csv."""
         output_file = os.path.join(spm.collection_dir(collection_id), "ranked-storms.csv")
         ranked_df = self.rank_and_filter_storms()
         ranked_df.to_csv(output_file, index=False)
         ranked_df["storm_date"] = pd.to_datetime(ranked_df["storm_date"])
         logging.info("Saved ranked storm data to %s", output_file)
-        return ranked_df
+        return ranked_df, output_file
 
 
 class StormFilter:
