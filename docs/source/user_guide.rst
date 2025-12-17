@@ -101,8 +101,18 @@ The following snippet provides an example of how to build and create a storm cat
          storm_duration_hours,
          min_precip_threshold,
          top_n_events,
+         use_threads=True, #True for Linux/WSL, False for Windows
+         num_workers=8, # Number of parallel workers
          check_every_n_hours=6,
       )
+      # Optionally, add DSS files to storm items
+      add_storm_dss_files(storm_catalog)
+      # Optionally, create normal precipitation grid
+      create_normal_precip(storm_catalog, duration_hours=storm_duration_hours)
+
+.. note::
+   If using Windows, set `use_threads` to `False` in order to avoid issues with multiprocessing. On Linux/WSL, set `use_threads` to `True`.
+   The use of ProcessPoolExecutor on Linux can lead to complications due to the way processes are spawned. More investigation is needed on this.
 
 Viewing Results
 ----------------

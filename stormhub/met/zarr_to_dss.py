@@ -301,6 +301,15 @@ def interpolate_nan_values(ds: xr.DataArray) -> xr.DataArray:
     return interpolated_combined
 
 
+def save_da_as_geotiff(
+    da: xr.DataArray, output_path: str, crs: str = "EPSG:4326", x_dim: str = "longitude", y_dim: str = "latitude"
+):
+    """Save xarray DataArray as GeoTIFF."""
+    da = da.rio.write_crs(crs)
+    da.rio.set_spatial_dims(x_dim=x_dim, y_dim=y_dim, inplace=True)
+    da.rio.to_raster(output_path, compress="LZW")
+
+
 def get_s3_zarr_data(
     s3_paths: List[str],
     aoi_gdf: GeoDataFrame,
@@ -309,8 +318,17 @@ def get_s3_zarr_data(
     variables_of_interest: List[str],
     interp_nan_vals: bool = True,
 ) -> xr.Dataset:
-    """Load and processe Zarr datasets from S3, clipping them to a given area of interest (AOI), filter by time and variables, and optionally interpolates missing values."""
-    s3 = s3fs.S3FileSystem(anon=True)
+    """
+    Read a multifile dataset from the specified S3 paths, filters it based on the area of interest (AOI) and the time range, extracts only the variables of interest and returns an xarray Dataset.
+
+    Args:
+        s3_paths: A list of S3 paths where the Zarr data is stored.
+        aoi_gdf: A GeoDataFrame containing the area of interest. Only the first entry is used, and should be a polygon or multipolygon geometry.
+        start_dt: The start datetime to filter the data.
+        end_dt: The end datetime to filter the data.
+        variables_of_interest: A list of variables to select from the dataset. If empty, all variables will be read.
+    """
+    s3 = s3fs.S3FileSystem(anon=True, config_kwargs={"max_pool_connections": 50})
     fileset = [s3fs.S3Map(root=path, s3=s3, check=False) for path in s3_paths]
     ds = xr.open_mfdataset(fileset, engine="zarr", chunks="auto", consolidated=True)
 
