@@ -52,17 +52,21 @@ def validate_config(config: dict) -> dict:
 
 
 def generate_date_range(
-    start_date: str, end_date: str, every_n_hours: int = 6, date_format: str = "%Y-%m-%d"
+    start_date: str, end_date: str, every_n_hours: int = 6, date_format: str = "%Y-%m-%d", months: List[int] = None
 ) -> List[datetime]:
     """Generate a list of datetime objects at a given interval between start and end dates."""
+    if months is None:
+        months = [1,2,3,4,5,6,7,8,9,10,11,12]
+
     start = datetime.strptime(start_date, date_format)
     end = datetime.strptime(end_date, date_format)
 
     date_range = []
     current_date = start
     while current_date <= end:
-        date_range.append(current_date)
-        current_date += timedelta(hours=every_n_hours)
+        if current_date.month in months:
+            date_range.append(current_date)
+            current_date += timedelta(hours=every_n_hours)
 
     return date_range
 
