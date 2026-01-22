@@ -90,4 +90,4 @@ if __name__ == "__main__":
     #add_storm_dss_files(storm_catalog)
     
     # Optionally, create normal precipitation grid
-    #create_normal_precip(storm_catalog, duration_hours=storm_duration_hours)
+    #create_normal_precip(start_year = 1980, end_year = 2024, catalog = storm_catalog, storm_duration_hours = storm_duration_hours, every_n_hours = 24)
