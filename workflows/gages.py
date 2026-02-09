@@ -1,5 +1,6 @@
 from stormhub.hydro.usgs.usgs import new_gage_collection, new_gage_catalog, add_ams_swe_to_gage_collection
 from stormhub.hydro.utils import find_gages_in_watershed
+from stormhub.hydro.usgs.calibration_events import add_calibration_events_to_collection
 from stormhub.logger import initialize_logger
 
 
@@ -26,4 +27,5 @@ if __name__ == "__main__":
     #     drainage_area_geojson_path = "path/to/drainage_areas.geojson",
     #     swe_zarr_path = "s3://path/to/swe.zarr")
 
-
+    # Optionally add calibration events to the gage collection
+    # add_calibration_events_to_collection(collection, tolerance_days=7, top_n_years=15)
