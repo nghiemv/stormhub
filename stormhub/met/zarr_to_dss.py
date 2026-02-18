@@ -467,6 +467,7 @@ def noaa_zarr_to_dss(
     aoi_name: str,
     storm_start: datetime,
     variable_duration_map: Dict[NOAADataVariable, int],
+    output_resolution_km: int,
 ):
     """Given a geometry and datetime information about a storm, writes variables of interest from NOAA dataset to DSS."""
     # arrange parameters
@@ -500,6 +501,6 @@ def noaa_zarr_to_dss(
             param_name=data_variable.dss_variable_title,
             param_measurement_type=data_variable.measurement_type,
             param_measurement_unit=data_variable.measurement_unit,
-            output_resolution_km=4,
+            output_resolution_km=output_resolution_km,
             data_version="AORC",
         )
