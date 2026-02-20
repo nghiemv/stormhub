@@ -7,12 +7,14 @@ import traceback
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any, List, Optional, Union, Dict
+from pathlib import Path
 import gc
 import re
 
 import pandas as pd
 import pystac
-from pystac import Asset, Collection, Item, Link, MediaType
+from pystac import Asset, Collection, Item, Link, MediaType, Catalog
+import stac_geoparquet
 from shapely.geometry import mapping, shape, Point
 import xarray as xr
 import geopandas as gpd
@@ -1330,7 +1332,66 @@ def create_normal_precip(
         catalog.add_item(item)
         catalog.save(catalog_type=pystac.CatalogType.SELF_CONTAINED)
 
+def stac_to_parquet(stac_object: Union[Collection, Catalog], parquet_file: str = None, s3_bucket_prefix: str = None):
+    """
+    Convert STAC Collection to GeoParquet format.
 
+    Args:
+        stac_object (Collection | Catalog): STAC Collection or Catalog containing storms Collection
+        parquet_file (str): Output path for parquet file. If None, defaults to 'all-items.parquet' in the collection directory.
+        s3_bucket_prefix (str): Optional S3 bucket prefix (e.g., 's3://my-bucket/my-prefix')
+                               If provided, all relative hrefs will be converted to S3 paths
+
+    Returns:
+        GeoParquet collection
+    """
+    # https://cloudnativegeo.org/blog/2024/08/introduction-to-stac-geoparquet/
+
+    if isinstance(stac_object, Collection):
+        stac_collection = stac_object
+    elif isinstance(stac_object, Catalog):
+        stac_collection = get_events_collection(stac_object)
+    else:
+        raise ValueError("stac_object must be a Collection or Catalog")
+
+    items = list(stac_collection.get_all_items())
+    # Update hrefs to S3 if bucket prefix is provided
+    if s3_bucket_prefix:
+        for item in items:
+            # Update item asset hrefs
+            for asset_key, asset in item.assets.items():
+                if asset.href and not asset.href.startswith(("http://", "https://", "s3://")):
+                    asset.href = f"{s3_bucket_prefix}/{asset.href}".replace("/./", "/")
+
+    rbr = stac_geoparquet.arrow.parse_stac_items_to_arrow(items)
+
+    if parquet_file is None:
+        collection_dir = Path(stac_collection.self_href).parent
+        parquet_file = collection_dir / "all-items.parquet"
+
+    parquet_result = stac_geoparquet.arrow.to_parquet(rbr, parquet_file)
+
+    # Add the parquet file as an asset to the collection with relative href
+    parquet_filename = Path(parquet_file).name
+    stac_collection.add_asset(
+        "all-items-geoparquet",
+        Asset(
+            href=parquet_filename,
+            media_type="application/vnd.apache.parquet",
+            description="GeoParquet representation of all items in the collection",
+            roles = ['data']
+        ),
+    )
+
+    # Update the parquet asset href if s3_bucket_prefix is provided
+    if s3_bucket_prefix:
+        parquet_asset = stac_collection.assets["all-items-geoparquet"]
+        parquet_asset.href = f"{s3_bucket_prefix}/{parquet_filename}"
+
+    # Save the updated collection
+    stac_collection.save_object()
+
+    return parquet_result
 
 def new_catalog(
     catalog_id: str,
