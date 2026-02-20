@@ -204,7 +204,7 @@ class AORCItem(Item):
                 )
                 storage = StorageExtension.ext(asset)
                 storage.platform = CloudPlatform.AWS
-                self.add_asset(f"AORC_{aorc_year}", asset)
+                self.add_asset("AORC", asset)
 
         return self._aorc_source_data
 

@@ -281,6 +281,7 @@ class UsgsGage(Item):
 
         asset = Asset(
             file_name,
+            title = "Annual Maximum Series Parquet",
             media_type=MediaType.PARQUET,
             roles=["data"],
             extra_fields={"file:values": file_table(peaks, "return_period", "discharge_CFS_(Approximate)")},
@@ -293,21 +294,21 @@ class UsgsGage(Item):
             filename = os.path.join(item_dir, f"{gage_id}-ams.png")
             plot_ams(df, gage_id, filename)
 
-            asset = Asset(filename, media_type=MediaType.PNG, roles=["thumbnail"])
+            asset = Asset(filename, title = "AMS Plot", media_type=MediaType.PNG, roles=["thumbnail"])
             self.add_asset("ams_plot", asset)
 
             # AMS Plot 2
             filename = os.path.join(item_dir, f"{gage_id}-ams-seasonal.png")
             plot_ams_seasonal(df, gage_id, filename)
 
-            asset = Asset(filename, media_type=MediaType.PNG, roles=["thumbnail"])
+            asset = Asset(filename, title="AMS Seasonal Plot", media_type=MediaType.PNG, roles=["thumbnail"])
             self.add_asset("ams_seasons_plot", asset)
 
             # LPII Plot
             filename = os.path.join(item_dir, f"{gage_id}-ams-lpiii.png")
             plot_log_pearson_iii(df["peak_va"], gage_id, filename)
 
-            asset = Asset(filename, media_type=MediaType.PNG, roles=["thumbnail"])
+            asset = Asset(filename, title="AMS LPIII Plot", media_type=MediaType.PNG, roles=["thumbnail"])
             self.add_asset("ams_LPIII_plot", asset)
 
     def get_flow_stats(self, item_dir: str, make_plots: bool = True):
@@ -327,7 +328,7 @@ class UsgsGage(Item):
 
         df.to_parquet(file_name)
 
-        asset = Asset(file_name, media_type=MediaType.PARQUET, roles=["data"])
+        asset = Asset(file_name, title="Flow Statistics Parquet", media_type=MediaType.PARQUET, roles=["data"])
 
         self.add_asset("flow_stats", asset)
 
@@ -336,7 +337,7 @@ class UsgsGage(Item):
             filename = os.path.join(item_dir, f"{gage_id}-flow-stats.png")
             plot_nwis_statistics(df, gage_id, filename)
 
-            asset = Asset(filename, media_type=MediaType.PNG, roles=["thumbnail"])
+            asset = Asset(filename, title="Flow Statistics Plot", media_type=MediaType.PNG, roles=["thumbnail"])
             self.add_asset("flow_statistics_plot", asset)
 
 
