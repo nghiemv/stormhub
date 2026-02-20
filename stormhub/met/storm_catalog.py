@@ -258,7 +258,7 @@ class StormCollection(pystac.Collection):
             Asset(
                 href=spm.collection_asset(self.id, "max_precip_locations.geojson"),
                 title="Max Precipitation Locations",
-                description="Feature collection of max precipitation locations from each storm event.",
+                description="Feature collection of max precipitation locations within transposed watershed from each storm event.",
                 media_type=MediaType.GEOJSON,
                 roles=["storm_summary"],
             ),
