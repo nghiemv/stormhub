@@ -670,7 +670,7 @@ def plot_year_event_map(
     watershed_gdf = gpd.read_file(watershed_file)
 
     # plot watershed boundary
-    watershed_gdf.boundary.plot(ax=ax, edgecolor='blue', linewidth=1.0, alpha=0.5)
+    watershed_gdf.boundary.plot(ax=ax, edgecolor="blue", linewidth=1.0, alpha=0.5)
 
     # Plot other gages first (background)
     if not other.empty:
