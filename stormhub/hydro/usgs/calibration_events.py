@@ -1,3 +1,5 @@
+"""Find calibration event candidates based on gage data analysis."""
+
 import json
 import logging
 from pathlib import Path
@@ -48,21 +50,20 @@ SQL_COUNT_RECORDS = "SELECT COUNT(*) FROM ams"
 # HELPERS
 # -----------------------------
 def human_flow(x: float) -> str:
-    """
-    Human-readable flow like 5.1k, 2.3M.
-    """
+    """Human-readable flow like 5.1k, 2.3M."""
     if not np.isfinite(x):
         return ""
     x = float(x)
     ax = abs(x)
     if ax >= 1_000_000:
-        return f"{x/1_000_000:.1f}M"
+        return f"{x / 1_000_000:.1f}M"
     if ax >= 1_000:
-        return f"{x/1_000:.1f}k"
+        return f"{x / 1_000:.1f}k"
     return f"{x:.0f}"
 
 
 def prepare_dataframe(df: pd.DataFrame, gage_id: str, station_name: str) -> pd.DataFrame:
+    """Prepare the AMS DataFrame for loading into DuckDB."""
     df = df.reset_index()
 
     if "datetime" in df.columns:
@@ -83,7 +84,7 @@ def load_gages_data(
     conn: duckdb.DuckDBPyConnection, collection: pystac.Collection
 ) -> Tuple[int, Dict[str, Dict[str, pd.Timestamp]]]:
     """
-    Loads AMS into DuckDB + returns gage count and time series availability ranges.
+    Load AMS into DuckDB + returns gage count and time series availability ranges.
 
     IMPORTANT: deterministic ordering by sorting items by gage_id.
     """
@@ -127,6 +128,7 @@ def load_gages_data(
 def overlaps_window(
     availability: Optional[Dict[str, pd.Timestamp]], window_start: pd.Timestamp, window_end: pd.Timestamp
 ) -> bool:
+    """Check if gage availability overlaps with the given window."""
     if not availability:
         return False
     a0 = availability["start"]
@@ -139,6 +141,7 @@ def overlaps_window(
 def get_return_period_for_flow(flow_cfs: float, rp_table: List[dict]) -> float:
     """
     Log-log interpolate return period from rp_table points.
+
     Expects:
       - discharge_CFS_(Approximate)
       - return_period
@@ -174,9 +177,7 @@ def get_return_period_for_flow(flow_cfs: float, rp_table: List[dict]) -> float:
 
 
 def preload_rp_tables(collection: pystac.Collection) -> Dict[str, List[dict]]:
-    """
-    Deterministic: sort items by gage_id.
-    """
+    """Deterministic: sort items by gage_id."""
     items = sorted(list(collection.get_items()), key=lambda it: str(it.id))
     rp_tables: Dict[str, List[dict]] = {}
     for item in items:
@@ -197,12 +198,7 @@ def compute_window_details(
     window_start: pd.Timestamp,
     window_end: pd.Timestamp,
 ) -> pd.DataFrame:
-    """
-    For a window:
-      - per gage: max peak flow in window + date it occurred (peak_date)
-      - return period
-      - time series availability (overlap)
-    """
+    """Compute details for a given window: peak flow, return period, timeseries availability for each gage."""
     s = pd.to_datetime(window_start).date().isoformat()
     e = pd.to_datetime(window_end).date().isoformat()
 
@@ -275,9 +271,7 @@ def select_best_window_per_year(
     tol_days: int,
 ) -> Tuple[pd.DataFrame, Dict[int, pd.DataFrame]]:
     """
-    For each year:
-      - consider anchors = AMS dates in that year
-      - pick the single best ±tol window that maximizes #gages with RP>2
+    For each year, find the best window (anchor date +/- tol_days) based on gage data.
 
     Idempotent tie-break:
       key = (num_gages, max_rp, avg_rp, max_flow, -anchor_date?) but we want earliest anchor on ties,
@@ -494,10 +488,7 @@ from matplotlib.lines import Line2D
 
 
 def _draw_geojson(ax, geojson_obj, linewidth=1.0, alpha=0.7):
-    """
-    Minimal GeoJSON renderer for Polygon/MultiPolygon/LineString/MultiLineString.
-    Draws outlines only (no fill).
-    """
+    """Minimal GeoJSON renderer for Polygon/MultiPolygon/LineString/MultiLineString. Draws outlines only (no fill)."""
 
     def draw_coords(coords):
         xs = [c[0] for c in coords]
@@ -549,10 +540,7 @@ def _draw_geojson(ax, geojson_obj, linewidth=1.0, alpha=0.7):
 
 
 def _rp_color_bin(rp: float) -> int:
-    """
-    Return an integer bin index for RP>2 classification.
-    Bins (yrs): 2–5, 5–10, 10–25, 25–50, 50–100, 100+
-    """
+    """Return an integer bin index for RP>2 classification. Bins (yrs): 2–5, 5–10, 10–25, 25–50, 50–100, 100+."""
     if rp < 5:
         return 0
     if rp < 10:
@@ -584,7 +572,6 @@ def plot_year_event_map(
     Assumes `detail` includes columns:
       - gage_id, return_period_yrs, has_timeseries, window_start, window_end
     """
-
     if detail.empty:
         raise RuntimeError(f"Empty detail for year {year}")
 
@@ -784,6 +771,7 @@ def plot_year_event_map(
 
 
 def export_tables(all_detail: pd.DataFrame, top_years: pd.DataFrame, out_dir: Path) -> None:
+    """Export the results tables to CSV."""
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # all_detail.to_parquet(out_dir / f"calibration_candidates.parquet", index=False)
@@ -792,7 +780,9 @@ def export_tables(all_detail: pd.DataFrame, top_years: pd.DataFrame, out_dir: Pa
     top_years.to_csv(out_dir / f"calibration_candidates.csv", index=False)
 
 
-def add_calibration_events_to_collection(gages_stac: Union[pystac.Catalog, pystac.Collection], tolerance_days: int = 7, top_n_years: int = 15) -> Tuple[pd.DataFrame, pd.DataFrame, List[Path]]:
+def add_calibration_events_to_collection(
+    gages_stac: Union[pystac.Catalog, pystac.Collection], tolerance_days: int = 7, top_n_years: int = 15
+) -> Tuple[pd.DataFrame, pd.DataFrame, List[Path]]:
     """
     Add calibration events to the collection based on gage data analysis.
 
@@ -801,10 +791,11 @@ def add_calibration_events_to_collection(gages_stac: Union[pystac.Catalog, pysta
         tolerance_days (int): The number of tolerance days for window selection.
         top_n_years (int): The number of top years to process and plot.
 
-    Returns:
-        Tuple[pd.DataFrame, pd.DataFrame, List[Path]]: A tuple containing the top years summary DataFrame, 
+    Returns
+    -------
+        Tuple[pd.DataFrame, pd.DataFrame, List[Path]]: A tuple containing the top years summary DataFrame,
         detailed event DataFrame, and a list of paths to the generated plots.
-    """    
+    """
     conn = duckdb.connect(":memory:")
 
     if isinstance(gages_stac, pystac.Collection):
@@ -840,7 +831,6 @@ def add_calibration_events_to_collection(gages_stac: Union[pystac.Catalog, pysta
     plot_paths = []
     map_paths = []
 
-
     for rank, (_, row) in enumerate(top_years.iterrows(), start=1):
         year = int(row["year"])
         det = year_to_detail[year].copy()
@@ -871,18 +861,18 @@ def add_calibration_events_to_collection(gages_stac: Union[pystac.Catalog, pysta
             rel_path = file_path.relative_to(collection_dir)
         except ValueError:
             rel_path = file_path
-        
+
         filename = file_path.name
 
         # Determine media type and asset key
-        if filename.endswith('.png'):
+        if filename.endswith(".png"):
             media_type = pystac.MediaType.PNG
             # Create asset key from filename
             asset_key = f"calibration_candidate_{filename[:-4]}"
             description = f"Calibration candidate visualization: {filename}"
             role = "visualization"
-        elif filename.endswith('.csv'):
-            media_type = 'text/csv'
+        elif filename.endswith(".csv"):
+            media_type = "text/csv"
             asset_key = "calibration_candidates_summary"
             description = "Summary of calibration candidates with event statistics"
             role = "data"
@@ -891,13 +881,8 @@ def add_calibration_events_to_collection(gages_stac: Union[pystac.Catalog, pysta
 
         # Create and add asset with relative href
         try:
-            asset = pystac.Asset(
-                href=str(rel_path),
-                media_type=media_type,
-                description=description,
-                roles=[role]
-            )
-            
+            asset = pystac.Asset(href=str(rel_path), media_type=media_type, description=description, roles=[role])
+
             collection.add_asset(asset_key, asset)
             logging.info(f"Added asset '{asset_key}' with relative href: {rel_path}")
         except Exception as e:

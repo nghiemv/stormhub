@@ -56,7 +56,7 @@ def generate_date_range(
 ) -> List[datetime]:
     """Generate a list of datetime objects at a given interval between start and end dates."""
     if months is None:
-        months = [1,2,3,4,5,6,7,8,9,10,11,12]
+        months = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
     start = datetime.strptime(start_date, date_format)
     end = datetime.strptime(end_date, date_format)

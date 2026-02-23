@@ -1197,14 +1197,14 @@ def add_storm_dss_files(
         except Exception as e:
             logging.error(f"Could not create dss file for item: {item.id} with error: {e}")
 
+
 def avg_annual_max_grids(zarr_path: str, normal_precip_grid_path: str = "normalized_precip.tif"):
-    """Calculates the average of all annual maximum grids in the Zarr store and saves the result as a GeoTIFF."""
-    
+    """Calculate the average of all annual maximum grids in the Zarr store and saves the result as a GeoTIFF."""
     logging.info("Calculating average of annual max grids...")
-    
-    store = zarr.open_group(zarr_path, mode='r')
+
+    store = zarr.open_group(zarr_path, mode="r")
     years = list(store.group_keys())
-    
+
     grids = []
     for year in years:
         ds = xr.open_zarr(zarr_path, group=str(year))
@@ -1216,19 +1216,20 @@ def avg_annual_max_grids(zarr_path: str, normal_precip_grid_path: str = "normali
         logging.info("Saving average grid to GeoTIFF...")
         save_da_as_geotiff(average, normal_precip_grid_path)
 
+
 def create_normal_precip(
-    start_year: int = 1980, 
-    end_year: int = 2024, 
-    transposition_region_href: Optional[str] = None, 
-    catalog: Optional[pystac.Catalog] = None, 
-    storm_duration_hours: int = 72, 
-    every_n_hours: int = 24, 
-    months: Optional[List[int]] = None, 
-    ams_zarr_path: str = "ams_grids.zarr", 
-    normal_precip_grid_path: str = "normalized_precip.tif"
+    start_year: int = 1980,
+    end_year: int = 2024,
+    transposition_region_href: Optional[str] = None,
+    catalog: Optional[pystac.Catalog] = None,
+    storm_duration_hours: int = 72,
+    every_n_hours: int = 24,
+    months: Optional[List[int]] = None,
+    ams_zarr_path: str = "ams_grids.zarr",
+    normal_precip_grid_path: str = "normalized_precip.tif",
 ):
     """
-    Creates normalized precipitation grids by calculating annual maximum series and averaging them using data from AORC. 
+    Create normalized precipitation grids by calculating annual maximum series and averaging them using data from AORC.
 
     Args:
         start_year (int, optional): The start year for the analysis period. Defaults to 1980 which is the first full year of AORC data.
@@ -1243,14 +1244,13 @@ def create_normal_precip(
     """
     if transposition_region_href is None and catalog is None:
         raise ValueError("Either transposition_region_href or a catalog must be provided.")
-    
+
     logging.info("Creating normalized precipitation grids...")
-    
+
     years = [year for year in range(start_year, end_year + 1)]
     variable_duration_map = {NOAADataVariable.APCP: storm_duration_hours}
     all_variables = list(variable_duration_map.keys())
     voi_keys = [v.value for v in all_variables]
-
 
     if transposition_region_href is None:
         transpo_item = get_transposition_item(catalog)
@@ -1260,7 +1260,9 @@ def create_normal_precip(
 
     for year in years:
         try:
-            dates = generate_date_range(f"{year}-01-01", f"{year}-12-31", every_n_hours=every_n_hours, date_format="%Y-%m-%d", months=months)
+            dates = generate_date_range(
+                f"{year}-01-01", f"{year}-12-31", every_n_hours=every_n_hours, date_format="%Y-%m-%d", months=months
+            )
 
             max_grid = None
             for storm_date in dates:
@@ -1295,7 +1297,7 @@ def create_normal_precip(
     if catalog:
         logging.info("Creating normalized_precip STAC Item...")
         item_id = "normalized-precip"
-        
+
         item = pystac.Item(
             id=item_id,
             datetime=datetime.now(),
@@ -1303,34 +1305,31 @@ def create_normal_precip(
             end_datetime=datetime(end_year, 1, 1),
             geometry=transpo_item.geometry,
             bbox=transpo_item.bbox,
-            properties={
-                "start_year": start_year,
-                "end_year": end_year,
-                "duration_hours": storm_duration_hours
-            }
+            properties={"start_year": start_year, "end_year": end_year, "duration_hours": storm_duration_hours},
         )
-        
+
         item.add_asset(
             "zarr",
             pystac.Asset(
                 href=os.path.abspath(ams_zarr_path),
                 media_type="application/vnd+zarr",
                 title="Annual Max Series Grids",
-                roles=["data"]
-            )
+                roles=["data"],
+            ),
         )
         item.add_asset(
             "normalized_precip",
             pystac.Asset(
                 href=os.path.abspath(normal_precip_grid_path),
-                media_type='image/tiff; application=geotiff',
+                media_type="image/tiff; application=geotiff",
                 title="Normalized Precipitation Grid",
-                roles=["data"]
-            )
+                roles=["data"],
+            ),
         )
-        
+
         catalog.add_item(item)
         catalog.save(catalog_type=pystac.CatalogType.SELF_CONTAINED)
+
 
 def stac_to_parquet(stac_object: Union[Collection, Catalog], parquet_file: str = None, s3_bucket_prefix: str = None):
     """
@@ -1342,7 +1341,8 @@ def stac_to_parquet(stac_object: Union[Collection, Catalog], parquet_file: str =
         s3_bucket_prefix (str): Optional S3 bucket prefix (e.g., 's3://my-bucket/my-prefix')
                                If provided, all relative hrefs will be converted to S3 paths
 
-    Returns:
+    Returns
+    -------
         GeoParquet collection
     """
     # https://cloudnativegeo.org/blog/2024/08/introduction-to-stac-geoparquet/
@@ -1379,7 +1379,7 @@ def stac_to_parquet(stac_object: Union[Collection, Catalog], parquet_file: str =
             href=parquet_filename,
             media_type="application/vnd.apache.parquet",
             description="GeoParquet representation of all items in the collection",
-            roles = ['data']
+            roles=["data"],
         ),
     )
 
@@ -1392,6 +1392,7 @@ def stac_to_parquet(stac_object: Union[Collection, Catalog], parquet_file: str =
     stac_collection.save_object()
 
     return parquet_result
+
 
 def new_catalog(
     catalog_id: str,

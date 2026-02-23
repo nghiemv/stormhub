@@ -26,7 +26,14 @@ from stormhub.hydro.plots import (
 from stormhub.utils import file_table
 
 
-def prepare_swe_data(swe_dataarray: xr.DataArray, start_date: datetime, end_date: datetime, crs: str ="EPSG:4326", x_dim: str ="lon", y_dim: str ="lat"):
+def prepare_swe_data(
+    swe_dataarray: xr.DataArray,
+    start_date: datetime,
+    end_date: datetime,
+    crs: str = "EPSG:4326",
+    x_dim: str = "lon",
+    y_dim: str = "lat",
+):
     """Slices time and sets spatial dimensions/CRS."""
     swe_subset = swe_dataarray.sel(time=slice(start_date, end_date))
     if swe_subset is None or swe_subset.size == 0:
@@ -35,18 +42,29 @@ def prepare_swe_data(swe_dataarray: xr.DataArray, start_date: datetime, end_date
     swe_subset.rio.set_spatial_dims(x_dim=x_dim, y_dim=y_dim, inplace=True)
     return swe_subset
 
+
 def clip_swe_to_geometry(swe_dataarray: xr.DataArray, geometry: shapely.geometry.Polygon, crs: str):
     """Clips the DataArray to a specific geometry."""
     return swe_dataarray.rio.clip([geometry], crs)
 
-def calculate_spatial_mean(clipped_da: xr.DataArray, x_dim: str ="lon", y_dim: str ="lat"):
-    """Calculates spatial mean and formats to DataFrame."""
+
+def calculate_spatial_mean(clipped_da: xr.DataArray, x_dim: str = "lon", y_dim: str = "lat"):
+    """Calculate spatial mean and formats to DataFrame."""
     daily_mean = clipped_da.mean(dim=[y_dim, x_dim])
     df = daily_mean.to_dataframe().reset_index()
-    return df[['time', 'SWE']].rename(columns={'SWE': 'daily_mean_swe_mm'})
+    return df[["time", "SWE"]].rename(columns={"SWE": "daily_mean_swe_mm"})
 
-def avg_daily_swe(geometry: shapely.geometry.Polygon, swe_dataarray: xr.DataArray, start_date: datetime, end_date: datetime, crs: str ="EPSG:4326", da_xdim: str ="lon", da_ydim: str ="lat"):
-    """Calculates daily average SWE over a specified geometry and time range.
+
+def avg_daily_swe(
+    geometry: shapely.geometry.Polygon,
+    swe_dataarray: xr.DataArray,
+    start_date: datetime,
+    end_date: datetime,
+    crs: str = "EPSG:4326",
+    da_xdim: str = "lon",
+    da_ydim: str = "lat",
+):
+    """Calculate daily average SWE over a specified geometry and time range.
 
     Args:
         geometry (shapely.geometry.Polygon): The geometry to clip the SWE data.
@@ -57,26 +75,30 @@ def avg_daily_swe(geometry: shapely.geometry.Polygon, swe_dataarray: xr.DataArra
         da_xdim (str): Name of the x dimension in the DataArray.
         da_ydim (str): Name of the y dimension in the DataArray.
 
-    Returns:
+    Returns
+    -------
         pd.DataFrame: DataFrame with daily average SWE values.
     """
-    
     # Prepare Data
-    prepared_da = prepare_swe_data(
-        swe_dataarray, start_date, end_date, crs, da_xdim, da_ydim
-    )
-    
+    prepared_da = prepare_swe_data(swe_dataarray, start_date, end_date, crs, da_xdim, da_ydim)
+
     # Clip to geom
     clipped_da = clip_swe_to_geometry(prepared_da, geometry, crs)
-    
+
     # Aggregate
     final_df = calculate_spatial_mean(clipped_da, da_xdim, da_ydim)
-    
+
     return final_df
 
 
-def add_ams_swe_to_gage_collection(gage_collection: Collection, drainage_area_geojson_path: str, swe_zarr_path: str, swe_variable_name: str='SWE', days_in_event: int=30):
-    """Adds average SWE assets to gage items in the given collection. Uses AMS parquet file for each gage to determine event dates.
+def add_ams_swe_to_gage_collection(
+    gage_collection: Collection,
+    drainage_area_geojson_path: str,
+    swe_zarr_path: str,
+    swe_variable_name: str = "SWE",
+    days_in_event: int = 30,
+):
+    """Add average SWE assets to gage items in the given collection. Uses AMS parquet file for each gage to determine event dates.
 
     Args:
         gage_collection (Collection): STAC Collection of gage items.
@@ -85,7 +107,8 @@ def add_ams_swe_to_gage_collection(gage_collection: Collection, drainage_area_ge
         swe_variable_name (str): Name of the SWE variable in the dataset.
         days_in_event (int): Number of days to look back for each AMS event.
 
-    Returns:
+    Returns
+    -------
         None
     """
     snow_ds = xr.open_zarr(swe_zarr_path, consolidated=True)
@@ -95,14 +118,13 @@ def add_ams_swe_to_gage_collection(gage_collection: Collection, drainage_area_ge
 
     for item in gage_collection.get_all_items():
         try:
-
             gage_number = item.id
             item_href = item.get_self_href()
-            item_dir = item_href.rpartition('/')[0]
+            item_dir = item_href.rpartition("/")[0]
 
             ams_href = None
             for asset in item.get_assets().values():
-                if asset.href.endswith('ams.pq'):
+                if asset.href.endswith("ams.pq"):
                     ams_href = asset.href
                     break
 
@@ -118,7 +140,7 @@ def add_ams_swe_to_gage_collection(gage_collection: Collection, drainage_area_ge
                 logging.warning(f"AMS file {ams_path} does not exist, skipping gage {gage_number}.")
                 continue
 
-            single_gage_da = da_polygons[da_polygons['Name'] == gage_number]
+            single_gage_da = da_polygons[da_polygons["Name"] == gage_number]
             drainage_area = single_gage_da.geometry.values[0]
 
             ams_dates = ams_pq.index
@@ -128,12 +150,12 @@ def add_ams_swe_to_gage_collection(gage_collection: Collection, drainage_area_ge
                 logging.info(f"Processing SWE for date: {date}")
                 end_date = date.tz_localize(None)
                 start_date = end_date - timedelta(days=days_in_event)
-                
+
                 try:
                     daily_swe = avg_daily_swe(drainage_area, swe_da, start_date=start_date, end_date=end_date)
-                    
-                    daily_swe['ams_ref_date'] = end_date
-                    
+
+                    daily_swe["ams_ref_date"] = end_date
+
                     swe_results.append(daily_swe)
                 except Exception as e:
                     logging.error(f"Skipping {end_date}: {e}")
@@ -141,7 +163,7 @@ def add_ams_swe_to_gage_collection(gage_collection: Collection, drainage_area_ge
             if len(swe_results) == 0:
                 logging.warning(f"No SWE results for gage {gage_number}, skipping asset addition.")
                 continue
-            
+
             combined_swe_df = pd.concat(swe_results, ignore_index=True)
             swe_fn = f"avg_ams_swe_{gage_number}.pq"
             combined_swe_df.to_parquet(f"{item_dir}/{swe_fn}")
@@ -153,12 +175,13 @@ def add_ams_swe_to_gage_collection(gage_collection: Collection, drainage_area_ge
                     media_type="application/parquet",
                     roles=["data"],
                     title="Average SWE",
-                    description="Average daily SWE over gage drainage area per AMS Event"
-                )
+                    description="Average daily SWE over gage drainage area per AMS Event",
+                ),
             )
             item.save_object()
         except Exception as e:
             logging.error(f"Error processing gage {gage_number}: {e}")
+
 
 class UsgsGage(Item):
     """A class representing a USGS gage as a STAC item."""
@@ -281,7 +304,7 @@ class UsgsGage(Item):
 
         asset = Asset(
             file_name,
-            title = "Annual Maximum Series Parquet",
+            title="Annual Maximum Series Parquet",
             media_type=MediaType.PARQUET,
             roles=["data"],
             extra_fields={"file:values": file_table(peaks, "return_period", "discharge_CFS_(Approximate)")},
@@ -294,7 +317,7 @@ class UsgsGage(Item):
             filename = os.path.join(item_dir, f"{gage_id}-ams.png")
             plot_ams(df, gage_id, filename)
 
-            asset = Asset(filename, title = "AMS Plot", media_type=MediaType.PNG, roles=["thumbnail"])
+            asset = Asset(filename, title="AMS Plot", media_type=MediaType.PNG, roles=["thumbnail"])
             self.add_asset("ams_plot", asset)
 
             # AMS Plot 2
