@@ -1013,9 +1013,7 @@ def create_items(
     if os.path.exists(collection_dir):
         try:
             existing_item_ids = {
-                name
-                for name in os.listdir(collection_dir)
-                if os.path.isdir(os.path.join(collection_dir, name))
+                name for name in os.listdir(collection_dir) if os.path.isdir(os.path.join(collection_dir, name))
             }
         except OSError as exc:
             logging.warning("Unable to list collection directory '%s': %s", collection_dir, exc)
@@ -1294,7 +1292,9 @@ def add_storm_dss_files(
 
                 variable_duration_map = {NOAADataVariable.APCP: duration_hours}
 
-            noaa_zarr_to_dss(dss_output_path, transpo_href, aoi_name, start_date_dt, variable_duration_map, output_resolution_km)
+            noaa_zarr_to_dss(
+                dss_output_path, transpo_href, aoi_name, start_date_dt, variable_duration_map, output_resolution_km
+            )
 
             item.add_asset(
                 dss_fn,
