@@ -1,5 +1,5 @@
 from stormhub.logger import initialize_logger
-from stormhub.met.storm_catalog import add_storm_dss_files, create_normal_precip, new_catalog, new_collection
+from stormhub.met.storm_catalog import add_storm_dss_files, create_normal_precip, new_catalog, new_collection, stac_to_parquet
 import json
 import logging
 import shutil
@@ -87,7 +87,10 @@ if __name__ == "__main__":
     add_config_to_collection(storm_collection)
     
     # Optionally, add DSS files to storm items
-    #add_storm_dss_files(storm_catalog)
+    # add_storm_dss_files(storm_catalog)
     
     # Optionally, create normal precipitation grid
-    #create_normal_precip(storm_catalog, duration_hours=storm_duration_hours)
+    # create_normal_precip(start_year = 1980, end_year = 2024, catalog = storm_catalog, storm_duration_hours = storm_duration_hours, every_n_hours = 24)
+
+    # Optionally, convert the collection to GeoParquet format and add as an asset
+    # stac_to_parquet(storm_catalog)
