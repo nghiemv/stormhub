@@ -561,8 +561,6 @@ class StormCatalog(pystac.Catalog):
         if not os.path.exists(collection_dir):
             raise ValueError(f"Collection directory not found: {collection_dir}")
 
-        min_x = min_y = max_x = max_y = None
-        min_time = max_time = None
         collection = None
 
         for entry in os.scandir(collection_dir):
@@ -594,26 +592,10 @@ class StormCatalog(pystac.Catalog):
 
             collection.add_item_to_collection(item)
 
-            if item.bbox:
-                min_x = item.bbox[0] if min_x is None else min(min_x, item.bbox[0])
-                min_y = item.bbox[1] if min_y is None else min(min_y, item.bbox[1])
-                max_x = item.bbox[2] if max_x is None else max(max_x, item.bbox[2])
-                max_y = item.bbox[3] if max_y is None else max(max_y, item.bbox[3])
-
-            if item.datetime is not None:
-                min_time = item.datetime if min_time is None else min(min_time, item.datetime)
-                max_time = item.datetime if max_time is None else max(max_time, item.datetime)
-
         if collection is None:
             raise ValueError(f"No item JSON files found in: {collection_dir}")
 
-        if min_x is not None and min_time is not None:
-            collection.extent = pystac.Extent(
-                spatial=pystac.SpatialExtent(bboxes=[[min_x, min_y, max_x, max_y]]),
-                temporal=pystac.TemporalExtent(intervals=[[min_time, max_time]]),
-            )
-        else:
-            logging.warning("Unable to compute extent for collection '%s'.", collection_id)
+        collection.update_extent_from_items()
 
         collection.add_asset(
             "valid-transposition-region",
