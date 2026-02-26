@@ -169,7 +169,8 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
-catalogs
+catalogs/*
+!catalogs/example-input-data/
 holding
 .DS_Store
 

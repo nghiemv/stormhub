@@ -1,0 +1,22 @@
+{
+   "watershed": {
+      "id": "allegheny",
+      "geometry_file": "/workspaces/stormhub/data/0_source/huc04/allegheny_huc.geojson",
+      "description": "Watershed for use in development of storm catalog"
+   },
+   "transposition_region": {
+      "id": "allegheny-transpo-area-v01",
+      "geometry_file": "/workspaces/stormhub/data/0_source/transposition/allegheny_slamsim2_transpo.geojson",
+      "description": "Transposition Domain developed by the ARC team"
+   },
+   "params": {
+      "start_date": "1979-02-01",
+      "end_date": "1979-02-28",
+      "top_n_events": 10,
+      "check_every_n_hours": 24,
+      "num_workers": 12,
+      "storm_duration_hours": 72,
+      "min_precip_threshold_inches": 1.0,
+      "output_resolution_km": 1
+   }
+}
