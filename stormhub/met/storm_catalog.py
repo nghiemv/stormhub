@@ -6,18 +6,21 @@ import os
 import traceback
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
-from typing import Any, List, Union, Dict
+from typing import Any, List, Optional, Union, Dict
+from pathlib import Path
 import gc
 import re
 
 import pandas as pd
 import pystac
-from pystac import Asset, Collection, Item, Link, MediaType
+from pystac import Asset, Collection, Item, Link, MediaType, Catalog
+import stac_geoparquet
 from shapely.geometry import mapping, shape, Point
 import xarray as xr
 import geopandas as gpd
 
 import matplotlib
+import zarr
 from stormhub.hydro_domain import HydroDomain
 from stormhub.logger import initialize_logger
 from stormhub.met.analysis import StormAnalyzer
@@ -257,7 +260,7 @@ class StormCollection(pystac.Collection):
             Asset(
                 href=spm.collection_asset(self.id, "max_precip_locations.geojson"),
                 title="Max Precipitation Locations",
-                description="Feature collection of max precipitation locations from each storm event.",
+                description="Feature collection of max precipitation locations within transposed watershed from each storm event.",
                 media_type=MediaType.GEOJSON,
                 roles=["storm_summary"],
             ),
@@ -517,6 +520,86 @@ class StormCatalog(pystac.Catalog):
             StormCollection: The new storm collection.
         """
         collection = StormCollection(collection_id, items)
+        collection.add_asset(
+            "valid-transposition-region",
+            pystac.Asset(
+                href=self.valid_transposition_region.self_href,
+                title="Valid Transposition Region",
+                description=f"Valid transposition region for {self.watershed.id} watershed",
+                media_type=pystac.MediaType.GEOJSON,
+                roles=["valid_transposition_region"],
+            ),
+        )
+
+        collection.add_asset(
+            "watershed",
+            pystac.Asset(
+                href=self.watershed.self_href,
+                title="Watershed",
+                description=f"{self.watershed.id} watershed",
+                media_type=pystac.MediaType.GEOJSON,
+                roles=["watershed"],
+            ),
+        )
+
+        collection.save_object(dest_href=self.spm.collection_file(collection_id), include_self_link=False)
+        self.add_collection_to_catalog(collection, override=True)
+        self.sanitize_catalog_assets()
+        return collection
+
+    def new_collection_from_items_on_disk(self, collection_id: str) -> StormCollection:
+        """
+        Create a new collection from item JSON files saved on disk.
+
+        This avoids holding all items in memory at once.
+
+        Args:
+            collection_id (str): The ID of the collection.
+
+        Returns
+        -------
+            StormCollection: The new storm collection.
+        """
+        collection_dir = self.spm.collection_dir(collection_id)
+        if not os.path.exists(collection_dir):
+            raise ValueError(f"Collection directory not found: {collection_dir}")
+
+        collection = None
+
+        for entry in os.scandir(collection_dir):
+            if not entry.is_dir():
+                continue
+
+            item_path = self.spm.collection_item(collection_id, entry.name)
+            if not os.path.exists(item_path):
+                continue
+
+            item = pystac.read_file(item_path)
+            if not isinstance(item, Item):
+                continue
+
+            if collection is None:
+                first_time = item.datetime or datetime(1970, 1, 1)
+                extent = pystac.Extent(
+                    spatial=pystac.SpatialExtent(bboxes=[[0, 0, 0, 0]]),
+                    temporal=pystac.TemporalExtent(intervals=[[first_time, first_time]]),
+                )
+                collection = StormCollection.__new__(StormCollection)
+                pystac.Collection.__init__(
+                    collection,
+                    id=collection_id,
+                    description="STAC collection generated from storm items",
+                    extent=extent,
+                )
+                collection.add_link(STORMHUB_REF_LINK)
+
+            collection.add_item_to_collection(item)
+
+        if collection is None:
+            raise ValueError(f"No item JSON files found in: {collection_dir}")
+
+        collection.update_extent_from_items()
+
         collection.add_asset(
             "valid-transposition-region",
             pystac.Asset(
@@ -876,7 +959,7 @@ def create_items(
     num_workers: int = None,
     use_threads: bool = False,
     with_tb: bool = False,
-) -> List:
+) -> None:
     """
     Create items for storm events, setting the item ID to `por_rank` instead of storm_date.
 
@@ -891,18 +974,14 @@ def create_items(
 
     Returns
     -------
-        list: List of created event items.
+        None
     """
-    event_items = []
-
     if not collection_id:
         collection_id = catalog.spm.storm_collection_id(storm_duration)
 
     collection_dir = catalog.spm.collection_dir(collection_id)
     if not os.path.exists(collection_dir):
         os.makedirs(collection_dir)
-
-    count = len(event_dates)
 
     if not num_workers:
         num_workers = 4
@@ -915,6 +994,24 @@ def create_items(
         executor_class = ProcessPoolExecutor
 
     storm_data = [(e["storm_date"], e["por_rank"]) for e in event_dates]
+    existing_item_ids = set()
+    if os.path.exists(collection_dir):
+        try:
+            existing_item_ids = {
+                name for name in os.listdir(collection_dir) if os.path.isdir(os.path.join(collection_dir, name))
+            }
+        except OSError as exc:
+            logging.warning("Unable to list collection directory '%s': %s", collection_dir, exc)
+            existing_item_ids = set()
+
+    if existing_item_ids:
+        pre_filter_count = len(storm_data)
+        storm_data = [(d, r) for d, r in storm_data if f"{r}" not in existing_item_ids]
+        skipped = pre_filter_count - len(storm_data)
+        if skipped > 0:
+            logging.info("Skipping %d existing items in collection '%s'.", skipped, collection_id)
+
+    count = len(storm_data)
 
     with executor_class(max_workers=num_workers) as executor:
         futures = [
@@ -934,8 +1031,10 @@ def create_items(
             count -= 1
             try:
                 r = future.result()
-                logging.info("%s processed (%d remaining)", r.datetime, count)
-                event_items.append(r)
+                if isinstance(r, dict):
+                    logging.info("%s processed (%d remaining)", r.get("storm_date"), count)
+                else:
+                    logging.info("%s processed (%d remaining)", r.datetime, count)
 
             except Exception as e:
                 if with_tb:
@@ -944,7 +1043,7 @@ def create_items(
                 else:
                     logging.error("Error processing: %s", e)
 
-    return event_items
+    return None
 
 
 def init_storm_catalog(
@@ -1131,6 +1230,7 @@ def add_storm_dss_files(
     use_valid_region: bool = False,
     variable_duration_map: Dict[NOAADataVariable, int] = None,
     dss_output_dir: str = None,
+    output_resolution_km: int = 1,
 ):
     """
     Add dss files containing meteorological data to all storm items in events collection.
@@ -1177,7 +1277,9 @@ def add_storm_dss_files(
 
                 variable_duration_map = {NOAADataVariable.APCP: duration_hours}
 
-            noaa_zarr_to_dss(dss_output_path, transpo_href, aoi_name, start_date_dt, variable_duration_map)
+            noaa_zarr_to_dss(
+                dss_output_path, transpo_href, aoi_name, start_date_dt, variable_duration_map, output_resolution_km
+            )
 
             item.add_asset(
                 dss_fn,
@@ -1195,91 +1297,200 @@ def add_storm_dss_files(
             logging.error(f"Could not create dss file for item: {item.id} with error: {e}")
 
 
-def create_normal_precip(catalog: pystac.Catalog, output_path: str = None, duration_hours: int = None):
+def avg_annual_max_grids(zarr_path: str, normal_precip_grid_path: str = "normalized_precip.tif"):
+    """Calculate the average of all annual maximum grids in the Zarr store and saves the result as a GeoTIFF."""
+    logging.info("Calculating average of annual max grids...")
+
+    store = zarr.open_group(zarr_path, mode="r")
+    years = list(store.group_keys())
+
+    grids = []
+    for year in years:
+        ds = xr.open_zarr(zarr_path, group=str(year))
+        grids.append(ds["APCP_surface"])
+
+    if grids:
+        combined = xr.concat(grids, dim="year")
+        average = combined.mean(dim="year")
+        logging.info("Saving average grid to GeoTIFF...")
+        save_da_as_geotiff(average, normal_precip_grid_path)
+
+
+def create_normal_precip(
+    start_year: int = 1980,
+    end_year: int = 2024,
+    transposition_region_href: Optional[str] = None,
+    catalog: Optional[pystac.Catalog] = None,
+    storm_duration_hours: int = 72,
+    every_n_hours: int = 24,
+    months: Optional[List[int]] = None,
+    ams_zarr_path: str = "ams_grids.zarr",
+    normal_precip_grid_path: str = "normalized_precip.tif",
+):
     """
-    Create a normal precipitation GeoTIFF by averaging precipitation data over the top annual storms for each year.
+    Create normalized precipitation grids by calculating annual maximum series and averaging them using data from AORC.
 
     Args:
-        catalog (pystac.Catalog): The STAC catalog containing storm data.
-        output_path (str, optional): Path to save the output GeoTIFF. If None is given, it will be saved in the events collection directory.
-        duration_hours (int, optional): Duration of the storm event in hours. If None, it will be parsed from the collection ID.
+        start_year (int, optional): The start year for the analysis period. Defaults to 1980 which is the first full year of AORC data.
+        end_year (int, optional): The end year for the analysis period. Defaults to 2024 which is the last full year of AORC data.
+        transposition_region_href (Optional[str], optional): Path to the transposition region geometry file. If None, it is retrieved from the catalog.
+        catalog (Optional[pystac.Catalog], optional): The STAC catalog to use for retrieving transposition region. If a Catalog is given then an normalized precip Item is created and added to the Catalog. Required if transposition_region_href is None.
+        storm_duration_hours (int, optional): Duration of the storm window in hours. Defaults to 72.
+        every_n_hours (int, optional): Time step in hours for the sliding window analysis. Defaults to 24.
+        months (Optional[List[int]], optional): List of months (integers) to include in the analysis. If None, all months are used.
+        ams_zarr_path (str, optional): Output path for the Annual Max Series Zarr store. Defaults to "ams_grids.zarr".
+        normal_precip_grid_path (str, optional): Output path for the normalized precipitation GeoTIFF. Defaults to "normalized_precip.tif".
     """
-    events_collection = get_events_collection(catalog)
-    transpo_item = get_transposition_item(catalog)
-    transpo_href = transpo_item.get_self_href()
+    if transposition_region_href is None and catalog is None:
+        raise ValueError("Either transposition_region_href or a catalog must be provided.")
 
-    if duration_hours is None:
-        collection_id = events_collection.id
-        duration_hours = parse_duration_from_id(collection_id)
+    logging.info("Creating normalized precipitation grids...")
 
-        if duration_hours is None:
-            logging.warning(
-                "No duration given and could not determine duration hours from collection ID, using default value of 72."
-            )
-            duration_hours = 72
+    years = [year for year in range(start_year, end_year + 1)]
+    variable_duration_map = {NOAADataVariable.APCP: storm_duration_hours}
+    all_variables = list(variable_duration_map.keys())
+    voi_keys = [v.value for v in all_variables]
 
-    logging.info(f"Using storm event duration of {duration_hours} hours for normal precipitation calculation.")
+    if transposition_region_href is None:
+        transpo_item = get_transposition_item(catalog)
+        transposition_region_href = transpo_item.get_self_href()
 
-    ranked_storms_path = events_collection.self_href.replace("collection.json", f"ranked-storms.csv")
-    try:
-        ranked_storms = pd.read_csv(ranked_storms_path)
-    except Exception as e:
-        logging.error("No ranked storms CSV found.")
-        return
+    aoi_gdf = gpd.read_file(transposition_region_href)
 
-    top_annual_storms = ranked_storms[ranked_storms["annual_rank"] == 1]
-    top_annual_storm_dates = top_annual_storms["storm_date"].tolist()
-    num_years = len(top_annual_storm_dates)
-    logging.info(f"Number of years for normal precipitation calculation: {num_years}")
-
-    if output_path is None:
-        output_path = events_collection.self_href.replace("collection.json", f"normal_precip_{num_years}-years.tif")
-
-    # Precipitation variable map with duration
-    variable_duration_map = {NOAADataVariable.APCP: duration_hours}
-
-    storm_arrays = []
-    for storm_date_str in top_annual_storm_dates:
-        logging.info(f"Processing storm date: {storm_date_str}")
+    for year in years:
         try:
-            storm_start = datetime.strptime(storm_date_str, "%Y-%m-%dT%H")
+            dates = generate_date_range(
+                f"{year}-01-01", f"{year}-12-31", every_n_hours=every_n_hours, date_format="%Y-%m-%d", months=months
+            )
 
-            all_variables = list(variable_duration_map.keys())
-            min_start = storm_start + timedelta(hours=1)  # make exclusive
-            max_end = storm_start + timedelta(hours=max(variable_duration_map.values()))
-            aorc_paths = get_aorc_paths(min_start, max_end)
-            aoi_gdf = gpd.read_file(transpo_href)
-            voi_keys = [v.value for v in all_variables]
+            max_grid = None
+            for storm_date in dates:
+                logging.info(f"Processing storm date: {storm_date}")
+                storm_start = storm_date
 
-            # get aorc data
-            aorc_data = get_s3_zarr_data(aorc_paths, aoi_gdf, min_start, max_end, voi_keys)
-            summed_data = aorc_data.sum(dim="time")
+                min_start = storm_start + timedelta(hours=1)  # make exclusive
+                max_end = storm_start + timedelta(hours=max(variable_duration_map.values()))
+                if max_end.year > year:
+                    break
+                aorc_paths = get_aorc_paths(min_start, max_end)
 
-            da = summed_data["APCP_surface"]
-            da = da.expand_dims(storm=[storm_start])
-            da = da.assign_coords(storm_time=("storm", [storm_start]))
-            storm_arrays.append(da)
+                # get aorc data
+                aorc_data = get_s3_zarr_data(aorc_paths, aoi_gdf, min_start, max_end, voi_keys, interp_nan_vals=False)
+                summed_data = aorc_data.sum(dim="time")
+
+                da = summed_data["APCP_surface"]
+                da = da.compute()
+
+                if max_grid is None:
+                    max_grid = da
+                else:
+                    max_grid = xr.where(da > max_grid, da, max_grid)
+
+            logging.info(f"Saving max grid for {year} into group {year}")
+            max_grid.to_zarr(ams_zarr_path, group=str(year), mode="a")
         except Exception as e:
-            logging.error(f"Error extracting precip data from storm date {storm_date_str}: {e}")
-            raise
+            logging.error(f"Error processing year {year}: {e}")
 
-    all_storms_da = xr.concat(storm_arrays, dim="storm")
-    mean_precip_da = all_storms_da.mean(dim="storm")
+    avg_annual_max_grids(ams_zarr_path, normal_precip_grid_path)
 
-    logging.info(f"Saving normal precipitation GeoTIFF to {output_path}")
-    save_da_as_geotiff(mean_precip_da, output_path)
+    if catalog:
+        logging.info("Creating normalized_precip STAC Item...")
+        item_id = "normalized-precip"
 
-    events_collection.add_asset(
-        "normal-precipitation",
-        pystac.Asset(
-            output_path,
-            "normal-precipitation",
-            description="Normal precipitation data containing the average precipitation over the top storms for each year.",
-            media_type="application/geotiff",
+        item = pystac.Item(
+            id=item_id,
+            datetime=datetime.now(),
+            start_datetime=datetime(start_year, 1, 1),
+            end_datetime=datetime(end_year, 1, 1),
+            geometry=transpo_item.geometry,
+            bbox=transpo_item.bbox,
+            properties={"start_year": start_year, "end_year": end_year, "duration_hours": storm_duration_hours},
+        )
+
+        item.add_asset(
+            "zarr",
+            pystac.Asset(
+                href=os.path.abspath(ams_zarr_path),
+                media_type="application/vnd+zarr",
+                title="Annual Max Series Grids",
+                roles=["data"],
+            ),
+        )
+        item.add_asset(
+            "normalized_precip",
+            pystac.Asset(
+                href=os.path.abspath(normal_precip_grid_path),
+                media_type="image/tiff; application=geotiff",
+                title="Normalized Precipitation Grid",
+                roles=["data"],
+            ),
+        )
+
+        catalog.add_item(item)
+        catalog.save(catalog_type=pystac.CatalogType.SELF_CONTAINED)
+
+
+def stac_to_parquet(stac_object: Union[Collection, Catalog], parquet_file: str = None, s3_bucket_prefix: str = None):
+    """
+    Convert STAC Collection to GeoParquet format.
+
+    Args:
+        stac_object (Collection | Catalog): STAC Collection or Catalog containing storms Collection
+        parquet_file (str): Output path for parquet file. If None, defaults to 'all-items.parquet' in the collection directory.
+        s3_bucket_prefix (str): Optional S3 bucket prefix (e.g., 's3://my-bucket/my-prefix')
+                               If provided, all relative hrefs will be converted to S3 paths
+
+    Returns
+    -------
+        GeoParquet collection
+    """
+    # https://cloudnativegeo.org/blog/2024/08/introduction-to-stac-geoparquet/
+
+    if isinstance(stac_object, Collection):
+        stac_collection = stac_object
+    elif isinstance(stac_object, Catalog):
+        stac_collection = get_events_collection(stac_object)
+    else:
+        raise ValueError("stac_object must be a Collection or Catalog")
+
+    items = list(stac_collection.get_all_items())
+    # Update hrefs to S3 if bucket prefix is provided
+    if s3_bucket_prefix:
+        for item in items:
+            # Update item asset hrefs
+            for asset_key, asset in item.assets.items():
+                if asset.href and not asset.href.startswith(("http://", "https://", "s3://")):
+                    asset.href = f"{s3_bucket_prefix}/{asset.href}".replace("/./", "/")
+
+    rbr = stac_geoparquet.arrow.parse_stac_items_to_arrow(items)
+
+    if parquet_file is None:
+        collection_dir = Path(stac_collection.self_href).parent
+        parquet_file = collection_dir / "all-items.parquet"
+
+    parquet_result = stac_geoparquet.arrow.to_parquet(rbr, parquet_file)
+
+    # Add the parquet file as an asset to the collection with relative href
+    parquet_filename = Path(parquet_file).name
+    stac_collection.add_asset(
+        "all-items-geoparquet",
+        Asset(
+            href=parquet_filename,
+            media_type="application/vnd.apache.parquet",
+            description="GeoParquet representation of all items in the collection",
             roles=["data"],
         ),
     )
-    events_collection.save_object()
+
+    # Update the parquet asset href if s3_bucket_prefix is provided
+    if s3_bucket_prefix:
+        parquet_asset = stac_collection.assets["all-items-geoparquet"]
+        parquet_asset.href = f"{s3_bucket_prefix}/{parquet_filename}"
+
+    # Save the updated collection
+    stac_collection.save_object()
+
+    return parquet_result
 
 
 def new_catalog(
@@ -1417,7 +1628,7 @@ def new_collection(
 
     if create_new_items:
         logging.info("Creating items for top %d events", len(top_events))
-        event_items = create_items(
+        create_items(
             top_events.to_dict(orient="records"),
             storm_catalog,
             storm_duration=storm_duration,
@@ -1425,7 +1636,7 @@ def new_collection(
             num_workers=num_workers,
             use_threads=use_threads,
         )
-        collection = storm_catalog.new_collection_from_items(collection_id, event_items)
+        collection = storm_catalog.new_collection_from_items_on_disk(collection_id)
 
     else:
         collection = storm_catalog.add_rank_to_collection(collection_id, top_events)
@@ -1453,6 +1664,7 @@ def resume_collection(
     num_workers: int = None,
     with_tb: bool = False,
     create_items: bool = True,
+    use_threads: bool = False,
 ):
     """
     Resume a storm collection.
@@ -1467,6 +1679,7 @@ def resume_collection(
         check_every_n_hours (int): The interval in hours to check for storms.
         num_workers (int, optional): Number of cpu's to use during processing.
         with_tb (bool): Whether to include traceback in error logs.
+        use_threads (bool): Whether to use threads instead of processes.
     """
     initialize_logger()
     storm_catalog = StormCatalog.from_file(catalog)
@@ -1492,4 +1705,5 @@ def resume_collection(
         num_workers=num_workers,
         with_tb=with_tb,
         create_new_items=create_items,
+        use_threads=use_threads,
     )
