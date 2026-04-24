@@ -22,6 +22,7 @@ from shapely import Polygon, to_geojson
 from shapely.geometry import shape
 
 from stormhub.met.transpose import Transpose
+from stormhub.met.zarr_to_dss import open_aorc_zarr
 
 NULL_POLYGON = Polygon()
 
@@ -156,11 +157,7 @@ class AORCItem(Item):
         - adds ZARR files to assets if they don't exist already
         """
         if self._aorc_source_data is None:
-            # Increase connection pool and configure for better memory management
-            s3_out = s3fs.S3FileSystem(anon=True, config_kwargs={"max_pool_connections": 50})
-            fileset = [s3fs.S3Map(root=aorc_path, s3=s3_out, check=False) for aorc_path in self.aorc_paths]
-            # Use auto chunks to align with Zarr storage, then rechunk if needed
-            ds = xr.open_mfdataset(fileset, engine="zarr", chunks="auto", consolidated=True)
+            ds = open_aorc_zarr(tuple(self.aorc_paths))
 
             transposition_geom_for_clip = self.transposition_domain_geometry
             bounds = transposition_geom_for_clip.bounds
