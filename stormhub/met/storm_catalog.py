@@ -856,9 +856,11 @@ def multi_processor(
 
     count = len(event_dates)
 
-    # Process in smaller batches to avoid memory buildup
-    # Limit concurrent tasks to prevent OOM, especially with threads loading large datasets
-    batch_size = max(min(num_workers // 3, 10), 2) if use_threads else num_workers
+    # USACE plugin: full parallelism. Upstream caps thread batch_size at
+    # num_workers // 3 to avoid OOM when each thread holds a lazy AORC
+    # slice, but with the regional cache + vectorized max_transpose the
+    # working set is small enough that this just leaves cores idle.
+    batch_size = num_workers
     logging.info("Processing in batches of %d", batch_size)
 
     executor_kwargs = {"max_workers": num_workers}
