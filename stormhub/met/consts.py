@@ -1,6 +1,8 @@
 """Constants."""
 
-NOAA_AORC_S3_BASE_URL = "s3://noaa-nws-aorc-v1-1-1km"
+import os
+
+NOAA_AORC_S3_BASE_URL = os.environ.get("AORC_S3_BASE_URL", "s3://noaa-nws-aorc-v1-1-1km")
 
 AORC_PRECIP_VARIABLE = "APCP_surface"
 AORC_X_VAR = "longitude"
