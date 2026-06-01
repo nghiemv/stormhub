@@ -2,6 +2,7 @@
 
 import json
 import logging
+import multiprocessing
 import os
 import traceback
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
@@ -10,6 +11,11 @@ from typing import Any, List, Optional, Union, Dict
 from pathlib import Path
 import gc
 import re
+
+# Use spawn, not fork: s3fs/fsspec run an async event-loop thread that fork
+# does not duplicate, so child workers deadlock in Event.wait() on their
+# first S3 read. Spawn starts each worker with a fresh interpreter.
+_SPAWN_CTX = multiprocessing.get_context("spawn")
 
 import pandas as pd
 import pystac
@@ -850,12 +856,18 @@ def multi_processor(
 
     count = len(event_dates)
 
-    # Process in smaller batches to avoid memory buildup
-    # Limit concurrent tasks to prevent OOM, especially with threads loading large datasets
-    batch_size = max(min(num_workers // 3, 10), 2) if use_threads else num_workers
+    # Run all workers concurrently. The earlier thread batch_size cap
+    # (num_workers // 3) guarded against OOM when each thread held a lazy
+    # AORC slice; with the cached zarr opener and vectorized max_transpose
+    # the per-task working set is small, so the cap only left cores idle.
+    batch_size = num_workers
     logging.info("Processing in batches of %d", batch_size)
 
-    with executor_class(max_workers=num_workers) as executor:
+    executor_kwargs = {"max_workers": num_workers}
+    if not use_threads:
+        executor_kwargs["mp_context"] = _SPAWN_CTX
+
+    with executor_class(**executor_kwargs) as executor:
         for i in range(0, len(event_dates), batch_size):
             batch = event_dates[i : i + batch_size]
             futures = [executor.submit(func, catalog, date, storm_duration) for date in batch]
@@ -1013,7 +1025,11 @@ def create_items(
 
     count = len(storm_data)
 
-    with executor_class(max_workers=num_workers) as executor:
+    executor_kwargs = {"max_workers": num_workers}
+    if not use_threads:
+        executor_kwargs["mp_context"] = _SPAWN_CTX
+
+    with executor_class(**executor_kwargs) as executor:
         futures = [
             executor.submit(
                 storm_search,
