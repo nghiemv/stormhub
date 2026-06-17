@@ -14,10 +14,11 @@ from stormhub.utils import StacPathManager
 class StormAnalyzer:
     """Analyze storm events."""
 
-    def __init__(self, csv_path: str, threshold: float, duration_hours: int):
+    def __init__(self, csv_path: str, threshold: float, duration_hours: int, buffer_hours: int = 24):
         self.csv_path = csv_path
         self.threshold = threshold
         self.duration_hours = duration_hours
+        self.buffer_hours = buffer_hours
         self.metrics_df = self._load_and_filter_data()
         if self.metrics_df.shape[0] == 0:
             raise ValueError("No storm events meet the threshold. Please adjust the threshold and try again.")
@@ -42,14 +43,26 @@ class StormAnalyzer:
         if pd.isna(start) or pd.isna(end):
             raise ValueError("Start or end date is NaT. Please check the input data and ensure events meet threshold.")
 
+        # try_block_period requires each storm's window END (start + duration +
+        # buffer) to exist in the date array. np.arange is end-exclusive and the
+        # array stops at the last storm_date, so without padding the trailing
+        # storms — including potentially the latest high-rank storm — are
+        # silently dropped. Extend the span to cover the maximum window end.
+        end = end + datetime.timedelta(hours=self.duration_hours + self.buffer_hours + 1)
+
         return StormFilter(start, end, datetime.timedelta(hours=1))
 
-    def rank_and_filter_storms(self, buffer_hours: int = 24) -> pd.DataFrame:
+    def rank_and_filter_storms(self, buffer_hours: int | None = None) -> pd.DataFrame:
         """Rank and filter storms.
 
-        buffer_hours represent the time between potential storm events.
+        buffer_hours represent the time between potential storm events. Defaults
+        to the value the filter span was sized for (``self.buffer_hours``);
+        passing a larger value here than at construction can re-introduce the
+        trailing-storm drop, so prefer setting it on the analyzer.
         TODO: Investigate appropriate values for this and verify functionality.
         """
+        if buffer_hours is None:
+            buffer_hours = self.buffer_hours
         storm_records = []
         overlapping_overall_rank = 1
         non_overlapping_rank = 1
