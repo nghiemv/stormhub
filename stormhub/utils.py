@@ -66,7 +66,9 @@ def generate_date_range(
     while current_date <= end:
         if current_date.month in months:
             date_range.append(current_date)
-            current_date += timedelta(hours=every_n_hours)
+        # Advance unconditionally: nesting this inside the month check spins
+        # forever the moment iteration reaches a month not in ``months``.
+        current_date += timedelta(hours=every_n_hours)
 
     return date_range
 

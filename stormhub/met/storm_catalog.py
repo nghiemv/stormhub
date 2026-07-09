@@ -1599,7 +1599,9 @@ def new_collection(
         raise ValueError(f"Catalog must be a path to a catalog file or a StormCatalog object not {type(catalog)}")
 
     if not end_date:
-        end_date = datetime.now().strftime("%Y-%m-%dT%H")
+        # Must match generate_date_range's default date_format ("%Y-%m-%d");
+        # a "%Y-%m-%dT%H" default would raise ValueError in strptime.
+        end_date = datetime.now().strftime("%Y-%m-%d")
 
     # logging.info(f"specific_dates: {specific_dates}")
     if not specific_dates:

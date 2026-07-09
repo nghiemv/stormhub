@@ -16,8 +16,14 @@ def parse_d_part(d_part):
 
 
 def extract_storm_type_and_rank(filename):
-    """Strip the storm type and rank given a dss path in format yyymmdd_72hr_st(x)_r(xxx).dss ."""
+    """Strip the storm type and rank given a dss path in format yyymmdd_72hr_st(x)_r(xxx).dss .
+
+    Returns (None, None) for filenames that don't match the expected pattern so
+    one off-pattern .dss file doesn't abort metadata generation.
+    """
     match = re.search(r"_([^_]+)_(r\d+)\.dss$", filename)
+    if match is None:
+        return None, None
     storm_type = match.group(1)
     rank = match.group(2)
     return storm_type, rank
