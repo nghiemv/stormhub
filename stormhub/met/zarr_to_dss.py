@@ -27,10 +27,10 @@ def open_aorc_zarr(paths: Tuple[str, ...]) -> xr.Dataset:
     and rebuilding the s3fs connection pool on every call. Slicing and
     clipping stay the caller's responsibility and return views.
 
-    Credentials/endpoint follow _build_aorc_s3fs: authenticated when
-    AORC_S3_KEY is set (regional mirror), anonymous otherwise (NOAA).
+    Credentials/endpoint follow build_aorc_s3fs: authenticated when
+    AORC_S3_ACCESS_KEY_ID is set (mirror), anonymous otherwise (NOAA).
     """
-    s3 = _build_aorc_s3fs()
+    s3 = build_aorc_s3fs()
     fileset = [s3fs.S3Map(root=p, s3=s3, check=False) for p in paths]
     return xr.open_mfdataset(fileset, engine="zarr", chunks="auto", consolidated=True)
 
@@ -329,22 +329,32 @@ def save_da_as_geotiff(
     da.rio.to_raster(output_path, compress="LZW")
 
 
-def _build_aorc_s3fs() -> s3fs.S3FileSystem:
-    """Return an s3fs filesystem for AORC data.
+def aorc_storage_options() -> dict:
+    """Return s3fs kwargs for the configured AORC source.
 
-    When AORC_S3_KEY is set the mirror credentials/endpoint are used;
-    otherwise falls back to anonymous access against NOAA public S3.
+    Anonymous NOAA public access by default; when ``AORC_S3_ACCESS_KEY_ID`` is
+    set, use the mirror credentials and endpoint instead.
     """
-    key = os.environ.get("AORC_S3_KEY")
-    if key:
-        return s3fs.S3FileSystem(
-            anon=False,
-            key=key,
-            secret=os.environ["AORC_S3_SECRET"],
-            endpoint_url=os.environ.get("AORC_S3_ENDPOINT"),
-            config_kwargs={"max_pool_connections": 50},
-        )
-    return s3fs.S3FileSystem(anon=True, config_kwargs={"max_pool_connections": 50})
+    opts: dict = {"config_kwargs": {"max_pool_connections": 50}}
+    key = os.environ.get("AORC_S3_ACCESS_KEY_ID")
+    if not key:
+        opts["anon"] = True
+        return opts
+    opts.update(
+        anon=False,
+        key=key,
+        secret=os.environ["AORC_S3_SECRET_ACCESS_KEY"],
+        endpoint_url=os.environ.get("AORC_S3_ENDPOINT_URL"),
+    )
+    region = os.environ.get("AORC_S3_REGION")
+    if region:
+        opts["client_kwargs"] = {"region_name": region}
+    return opts
+
+
+def build_aorc_s3fs() -> s3fs.S3FileSystem:
+    """Return an s3fs filesystem for the configured AORC source."""
+    return s3fs.S3FileSystem(**aorc_storage_options())
 
 
 def get_s3_zarr_data(

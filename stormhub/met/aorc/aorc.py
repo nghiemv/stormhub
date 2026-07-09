@@ -22,7 +22,7 @@ from shapely import Polygon, to_geojson
 from shapely.geometry import shape
 
 from stormhub.met.transpose import Transpose
-from stormhub.met.zarr_to_dss import open_aorc_zarr
+from stormhub.met.zarr_to_dss import build_aorc_s3fs, open_aorc_zarr
 
 NULL_POLYGON = Polygon()
 
@@ -338,8 +338,9 @@ class AORCItem(Item):
 
 def valid_spaces_item(watershed: Item, transposition_region: Item, storm_duration: int = 72) -> Polygon:
     """Search a sample zarr dataset to identify valid spaces for transposition. datetime.datetime(1980, 5, 1) is used as a start time for the search."""
-    # Increase connection pool to avoid warnings
-    s3 = s3fs.S3FileSystem(anon=True, config_kwargs={"max_pool_connections": 50})
+    # Use the shared builder so this read follows the same AORC source
+    # (mirror or NOAA public) as the rest of the pipeline.
+    s3 = build_aorc_s3fs()
     start_time = datetime.datetime(1980, 5, 1)
     sample_data = s3fs.S3Map(root=f"{NOAA_AORC_S3_BASE_URL}/{start_time.year}.zarr", s3=s3)
     ds = xr.open_dataset(sample_data, engine="zarr", chunks="auto", consolidated=True)
