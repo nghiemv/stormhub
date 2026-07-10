@@ -9,7 +9,7 @@ from stormhub.met.zarr_to_dss import aorc_storage_options
 _MIRROR_ENV = {
     "AORC_S3_KEY": "AK",
     "AORC_S3_SECRET": "SK",
-    "AORC_S3_ENDPOINT": "https://s3.hecdev.net",
+    "AORC_S3_ENDPOINT": "https://s3.example.com",
 }
 
 
@@ -26,7 +26,7 @@ class AorcStorageOptionsTest(unittest.TestCase):
         self.assertFalse(opts["anon"])
         self.assertEqual(opts["key"], "AK")
         self.assertEqual(opts["secret"], "SK")
-        self.assertEqual(opts["endpoint_url"], "https://s3.hecdev.net")
+        self.assertEqual(opts["endpoint_url"], "https://s3.example.com")
         self.assertNotIn("client_kwargs", opts)
 
     def test_region_is_optional(self):
