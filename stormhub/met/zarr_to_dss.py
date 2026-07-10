@@ -1,6 +1,6 @@
 """Create dss from aorc zarr data."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from functools import lru_cache
 import math
@@ -16,6 +16,17 @@ import s3fs
 import xarray as xr
 from stormhub.met.consts import NOAA_AORC_S3_BASE_URL, KM_TO_M_CONVERSION_FACTOR, SHG_WKT
 import logging
+
+
+def _as_naive_utc(dt: datetime) -> datetime:
+    """Return ``dt`` as a tz-naive UTC datetime (AORC's time coord is tz-naive).
+
+    tz-aware inputs are converted to UTC then stripped of tzinfo; tz-naive
+    inputs (assumed UTC) are returned unchanged.
+    """
+    if dt is not None and getattr(dt, "tzinfo", None) is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 @lru_cache(maxsize=4)
@@ -177,45 +188,29 @@ def get_lower_left_xy(
     return (lower_left_x, lower_left_y)
 
 
-def convert_temperature_dataset(data: xr.Dataset, chunk_size: int = 144) -> xr.Dataset:
-    """Convert temperature in Kelvin to the desired output_unit. Utilizes chunking to save memory."""
+def convert_temperature_dataset(data: xr.DataArray) -> xr.DataArray:
+    """Convert temperature from Kelvin to the configured output unit.
+
+    Uses scalar broadcasting, which stays lazy and chunk-aligned on dask-backed
+    data — no full-size constant arrays are materialized and no manual time
+    chunking is needed (the previous implementation allocated an array the size
+    of the whole dataset just to hold the constant 273.15).
+    """
     output_unit = NOAADataVariable.TMP.measurement_unit
     data_unit = data.units
     if data_unit != "K":
         raise ValueError(f"Expected temperature data in Kelvin, got measurement unit of {data_unit} instead")
 
-    if output_unit != "K":
-        data_shape = data.shape
-        c_degrees_difference = np.full(data_shape, 273.15)
-        num_chunks = (data_shape[0] + chunk_size - 1) // chunk_size
-
-        converted_chunks = []
-
-        for i in range(num_chunks):
-            start = i * chunk_size
-            end = min((i + 1) * chunk_size, data_shape[0])
-
-            data_chunk = data.isel(time=slice(start, end))
-
-            if output_unit == "DEG C":
-                converted_chunk = data_chunk - c_degrees_difference[start:end]
-            elif output_unit == "DEG F":
-                c_data_chunk = data_chunk - c_degrees_difference[start:end]
-                scale_difference = np.full(c_data_chunk.shape, 9 / 5)
-                scale_data_chunk = c_data_chunk * scale_difference
-                f_difference = np.full(c_data_chunk.shape, 32)
-                converted_chunk = scale_data_chunk + f_difference
-            else:
-                raise ValueError(
-                    f"Temperature conversion only supported from Kelvin (K) to Celsius (DEG C) or Fahrenheit (DEG F); got output unit of {output_unit} instead"
-                )
-
-            converted_chunks.append(converted_chunk)
-
-        # Concatenate all converted chunks along the 'time' dimension
-        data = xr.concat(converted_chunks, dim="time")
-
-    return data
+    if output_unit == "K":
+        return data
+    if output_unit == "DEG C":
+        return data - 273.15
+    if output_unit == "DEG F":
+        return (data - 273.15) * 9 / 5 + 32
+    raise ValueError(
+        f"Temperature conversion only supported from Kelvin (K) to Celsius (DEG C) or Fahrenheit (DEG F); "
+        f"got output unit of {output_unit} instead"
+    )
 
 
 def create_gridded_data(
@@ -382,6 +377,13 @@ def get_s3_zarr_data(
     # Select only variables of interest
     if variables_of_interest:
         ds = ds[variables_of_interest]
+
+    # AORC's zarr ``time`` coordinate is tz-naive (UTC). Normalize tz-aware
+    # bounds to tz-naive UTC so the time slice below doesn't raise "Cannot
+    # compare tz-naive and tz-aware datetime-like objects" for callers passing
+    # tz-aware datetimes (e.g. pystac ``item.datetime``).
+    start_dt = _as_naive_utc(start_dt)
+    end_dt = _as_naive_utc(end_dt)
 
     # Reproject AOI and clip spatially
     aoi_gdf = aoi_gdf.to_crs(ds.rio.crs)
