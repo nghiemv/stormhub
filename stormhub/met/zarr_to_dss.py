@@ -1,6 +1,6 @@
 """Create dss from aorc zarr data."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from functools import lru_cache
 import math
@@ -16,6 +16,17 @@ import s3fs
 import xarray as xr
 from stormhub.met.consts import NOAA_AORC_S3_BASE_URL, KM_TO_M_CONVERSION_FACTOR, SHG_WKT
 import logging
+
+
+def _as_naive_utc(dt: datetime) -> datetime:
+    """Return ``dt`` as a tz-naive UTC datetime (AORC's time coord is tz-naive).
+
+    tz-aware inputs are converted to UTC then stripped of tzinfo; tz-naive
+    inputs (assumed UTC) are returned unchanged.
+    """
+    if dt is not None and getattr(dt, "tzinfo", None) is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 @lru_cache(maxsize=4)
@@ -382,6 +393,13 @@ def get_s3_zarr_data(
     # Select only variables of interest
     if variables_of_interest:
         ds = ds[variables_of_interest]
+
+    # AORC's zarr ``time`` coordinate is tz-naive (UTC). Normalize tz-aware
+    # bounds to tz-naive UTC so the time slice below doesn't raise "Cannot
+    # compare tz-naive and tz-aware datetime-like objects" for callers passing
+    # tz-aware datetimes (e.g. pystac ``item.datetime``).
+    start_dt = _as_naive_utc(start_dt)
+    end_dt = _as_naive_utc(end_dt)
 
     # Reproject AOI and clip spatially
     aoi_gdf = aoi_gdf.to_crs(ds.rio.crs)

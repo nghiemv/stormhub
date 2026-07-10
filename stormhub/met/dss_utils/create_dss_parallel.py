@@ -18,6 +18,7 @@ import logging
 from datetime import datetime
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from stormhub.met.storm_catalog import _SPAWN_CTX
 from stormhub.met.zarr_to_dss import noaa_zarr_to_dss, NOAADataVariable
 
 
@@ -70,7 +71,10 @@ def main(json_path, dss_dir, aoi_path, aoi_name):
 
     os.makedirs(dss_dir, exist_ok=True)
 
-    with ProcessPoolExecutor(max_workers=2) as executor:
+    # Shared spawn context (_SPAWN_CTX): process_storm -> noaa_zarr_to_dss reads
+    # AORC over fsspec/s3fs, which deadlocks in a forked worker (fork doesn't
+    # duplicate fsspec's async event-loop thread). Don't rely on the default.
+    with ProcessPoolExecutor(max_workers=2, mp_context=_SPAWN_CTX) as executor:
         futures = [
             executor.submit(process_storm, date, attrs, dss_dir, aoi_path, aoi_name) for date, attrs in storms.items()
         ]
