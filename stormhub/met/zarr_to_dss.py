@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from functools import lru_cache
 import math
+import os
 from typing import List, Tuple, Literal, Dict
 from affine import Affine
 from hecdss import HecDss, gridded_data
@@ -25,8 +26,11 @@ def open_aorc_zarr(paths: Tuple[str, ...]) -> xr.Dataset:
     ``<year>.zarr`` set. Caching here avoids re-reading ``.zmetadata``
     and rebuilding the s3fs connection pool on every call. Slicing and
     clipping stay the caller's responsibility and return views.
+
+    Credentials/endpoint follow build_aorc_s3fs: authenticated when
+    AORC_S3_KEY is set (mirror), anonymous otherwise (NOAA).
     """
-    s3 = s3fs.S3FileSystem(anon=True, config_kwargs={"max_pool_connections": 50})
+    s3 = build_aorc_s3fs()
     fileset = [s3fs.S3Map(root=p, s3=s3, check=False) for p in paths]
     return xr.open_mfdataset(fileset, engine="zarr", chunks="auto", consolidated=True)
 
@@ -323,6 +327,35 @@ def save_da_as_geotiff(
     da = da.rio.write_crs(crs)
     da.rio.set_spatial_dims(x_dim=x_dim, y_dim=y_dim, inplace=True)
     da.rio.to_raster(output_path, compress="LZW")
+
+
+def aorc_storage_options() -> dict:
+    """Return s3fs kwargs for the configured AORC source.
+
+    Anonymous NOAA public access by default; when ``AORC_S3_KEY`` is set, use
+    the mirror credentials and endpoint instead. These names match the plugin's
+    established contract (``run.py`` passthrough, ``aorc_auth``/``aorc_preflight``).
+    """
+    opts: dict = {"config_kwargs": {"max_pool_connections": 50}}
+    key = os.environ.get("AORC_S3_KEY")
+    if not key:
+        opts["anon"] = True
+        return opts
+    opts.update(
+        anon=False,
+        key=key,
+        secret=os.environ["AORC_S3_SECRET"],
+        endpoint_url=os.environ.get("AORC_S3_ENDPOINT"),
+    )
+    region = os.environ.get("AORC_S3_REGION")
+    if region:
+        opts["client_kwargs"] = {"region_name": region}
+    return opts
+
+
+def build_aorc_s3fs() -> s3fs.S3FileSystem:
+    """Return an s3fs filesystem for the configured AORC source."""
+    return s3fs.S3FileSystem(**aorc_storage_options())
 
 
 def get_s3_zarr_data(
