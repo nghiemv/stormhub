@@ -2,7 +2,9 @@
 
 from datetime import datetime, timedelta
 from enum import Enum
+from functools import lru_cache
 import math
+import os
 from typing import List, Tuple, Literal, Dict
 from affine import Affine
 from hecdss import HecDss, gridded_data
@@ -14,6 +16,23 @@ import s3fs
 import xarray as xr
 from stormhub.met.consts import NOAA_AORC_S3_BASE_URL, KM_TO_M_CONVERSION_FACTOR, SHG_WKT
 import logging
+
+
+@lru_cache(maxsize=4)
+def open_aorc_zarr(paths: Tuple[str, ...]) -> xr.Dataset:
+    """Open (and cache per process) an AORC zarr multifile dataset.
+
+    Candidates in a scan and storms in an extract all target the same
+    ``<year>.zarr`` set. Caching here avoids re-reading ``.zmetadata``
+    and rebuilding the s3fs connection pool on every call. Slicing and
+    clipping stay the caller's responsibility and return views.
+
+    Credentials/endpoint follow build_aorc_s3fs: authenticated when
+    AORC_S3_KEY is set (mirror), anonymous otherwise (NOAA).
+    """
+    s3 = build_aorc_s3fs()
+    fileset = [s3fs.S3Map(root=p, s3=s3, check=False) for p in paths]
+    return xr.open_mfdataset(fileset, engine="zarr", chunks="auto", consolidated=True)
 
 
 logging.basicConfig(
@@ -310,6 +329,35 @@ def save_da_as_geotiff(
     da.rio.to_raster(output_path, compress="LZW")
 
 
+def aorc_storage_options() -> dict:
+    """Return s3fs kwargs for the configured AORC source.
+
+    Anonymous NOAA public access by default; when ``AORC_S3_KEY`` is set, use
+    the mirror credentials and endpoint instead. These names match the plugin's
+    established contract (``run.py`` passthrough, ``aorc_auth``/``aorc_preflight``).
+    """
+    opts: dict = {"config_kwargs": {"max_pool_connections": 50}}
+    key = os.environ.get("AORC_S3_KEY")
+    if not key:
+        opts["anon"] = True
+        return opts
+    opts.update(
+        anon=False,
+        key=key,
+        secret=os.environ["AORC_S3_SECRET"],
+        endpoint_url=os.environ.get("AORC_S3_ENDPOINT"),
+    )
+    region = os.environ.get("AORC_S3_REGION")
+    if region:
+        opts["client_kwargs"] = {"region_name": region}
+    return opts
+
+
+def build_aorc_s3fs() -> s3fs.S3FileSystem:
+    """Return an s3fs filesystem for the configured AORC source."""
+    return s3fs.S3FileSystem(**aorc_storage_options())
+
+
 def get_s3_zarr_data(
     s3_paths: List[str],
     aoi_gdf: GeoDataFrame,
@@ -329,9 +377,7 @@ def get_s3_zarr_data(
         variables_of_interest: A list of variables to select from the dataset. If empty, all variables will be read.
         interp_nan_vals: A boolean indicating whether to interpolate missing values in the dataset. If True, linear interpolation will be performed along both latitude and longitude dimensions, and the results will be averaged. Defaults to False.
     """
-    s3 = s3fs.S3FileSystem(anon=True, config_kwargs={"max_pool_connections": 50})
-    fileset = [s3fs.S3Map(root=path, s3=s3, check=False) for path in s3_paths]
-    ds = xr.open_mfdataset(fileset, engine="zarr", chunks="auto", consolidated=True)
+    ds = open_aorc_zarr(tuple(s3_paths))
 
     # Select only variables of interest
     if variables_of_interest:
