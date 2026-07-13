@@ -5,7 +5,8 @@ import logging
 import multiprocessing
 import os
 import traceback
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+import itertools
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
 from typing import Any, List, Optional, Union, Dict
 from pathlib import Path
@@ -820,6 +821,65 @@ def serial_processor(
                     logging.error("Error processing: %s", e)
 
 
+def bounded_map(submit, work_items, on_result, on_error=None, max_in_flight=4, gc_every=0):
+    """
+    Run ``work_items`` through ``submit`` with a bounded number of futures in flight.
+
+    A sliding window: prime ``max_in_flight`` futures, then for every future that
+    completes, harvest its result and submit exactly one more. This bounds the
+    parent's resident result set to ~``max_in_flight`` (instead of ``len(work_items)``)
+    *without* the batch-barrier idle of submitting fixed chunks — a worker that
+    finishes early picks up the next item immediately rather than waiting for the
+    slowest task in its batch. On the item-creation workload (variable per-item
+    cost) this recovers the straggler idle that a chunked submit leaves on the table.
+
+    Args:
+        submit (callable): ``item -> Future``. Typically ``lambda x: executor.submit(fn, x)``.
+        work_items (iterable): Items to process, consumed lazily.
+        on_result (callable): ``result -> None``, called as each future completes.
+        on_error (callable, optional): ``exc -> None``, called when a future raises.
+        max_in_flight (int): Maximum outstanding futures (>= 1).
+        gc_every (int): If > 0, run ``gc.collect()`` every this many completions
+            (for workloads whose results hold cyclic references).
+
+    Returns
+    -------
+        int: The number of items processed (completed, success or handled error).
+    """
+    max_in_flight = max(1, max_in_flight)
+    work = iter(work_items)
+    in_flight = {submit(item) for item in itertools.islice(work, max_in_flight)}
+
+    done_count = 0
+    while in_flight:
+        done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
+        for future in done:
+            try:
+                on_result(future.result())
+            except Exception as e:  # noqa: BLE001 - forwarded to caller's handler
+                if on_error is not None:
+                    on_error(e)
+            done_count += 1
+            if gc_every and done_count % gc_every == 0:
+                gc.collect()
+        # Refill: one new task per completion keeps the window full and the pool busy.
+        in_flight |= {submit(item) for item in itertools.islice(work, len(done))}
+
+    return done_count
+
+
+def _log_processing_error(with_tb: bool):
+    """Return an ``on_error`` handler matching the existing error-log format."""
+
+    def handler(e: Exception) -> None:
+        if with_tb:
+            logging.error("Error processing: %s\n%s", e, traceback.format_exc())
+        else:
+            logging.error("Error processing: %s", e)
+
+    return handler
+
+
 def multi_processor(
     func: callable,
     catalog: StormCatalog,
@@ -856,46 +916,33 @@ def multi_processor(
 
     count = len(event_dates)
 
-    # USACE plugin: full parallelism. Upstream caps thread batch_size at
-    # num_workers // 3 to avoid OOM when each thread holds a lazy AORC
-    # slice, but with the regional cache + vectorized max_transpose the
-    # working set is small enough that this just leaves cores idle.
-    batch_size = num_workers
-    logging.info("Processing in batches of %d", batch_size)
+    # Sliding-window submission (see bounded_map): keep ~2*num_workers items in
+    # flight so a freed worker always has queued work, while the small result
+    # dicts are harvested and dropped as they complete. Replaces the previous
+    # fixed-chunk submit, which drained each batch to its slowest task before
+    # starting the next and left cores idle at every boundary.
+    logging.info("Processing with up to %d in flight", 2 * num_workers)
 
     executor_kwargs = {"max_workers": num_workers}
     if not use_threads:
         executor_kwargs["mp_context"] = _SPAWN_CTX
 
-    with executor_class(**executor_kwargs) as executor:
-        for i in range(0, len(event_dates), batch_size):
-            batch = event_dates[i : i + batch_size]
-            futures = [executor.submit(func, catalog, date, storm_duration) for date in batch]
+    with executor_class(**executor_kwargs) as executor, open(output_csv, "a", encoding="utf-8") as f:
 
-            # Write results as they complete
-            with open(output_csv, "a", encoding="utf-8") as f:
-                for future in as_completed(futures):
-                    count -= 1
-                    try:
-                        r = future.result()
-                        f.write(storm_search_results_to_csv_line(r))
-                        f.flush()  # Force write to disk
-                        logging.info("%s processed (%d remaining)", r["storm_date"], count)
+        def on_result(r):
+            nonlocal count
+            count -= 1
+            f.write(storm_search_results_to_csv_line(r))
+            f.flush()  # Force write to disk
+            logging.info("%s processed (%d remaining)", r["storm_date"], count)
 
-                        # Explicitly delete result to free memory
-                        del r
-
-                    except Exception as e:
-                        if with_tb:
-                            tb = traceback.format_exc()
-                            logging.error("Error processing: %s\n%s", e, tb)
-                        else:
-                            logging.error("Error processing: %s", e)
-
-            # Clear futures list and force garbage collection between batches
-            del futures
-            del batch
-            gc.collect()
+        bounded_map(
+            lambda date: executor.submit(func, catalog, date, storm_duration),
+            event_dates,
+            on_result,
+            on_error=_log_processing_error(with_tb),
+            max_in_flight=2 * num_workers,
+        )
 
 
 def collect_event_stats(
@@ -1029,51 +1076,44 @@ def create_items(
     if not use_threads:
         executor_kwargs["mp_context"] = _SPAWN_CTX
 
-    # Submit in bounded batches, mirroring multi_processor. storm_search(return_item=
-    # True) returns a full AORCItem pickled back to the parent, and each completed
-    # Future retains it (future._result). Submitting all storm_data at once would
-    # keep every returned item resident until the pool closed, so RSS grew
-    # monotonically with top_n_events and OOM'd on large collections. The items are
-    # already persisted to disk by storm_search and reloaded via
-    # new_collection_from_items_on_disk, so the returned objects are unused here —
-    # drop them each batch to bound the resident set to num_workers.
-    batch_size = max(1, num_workers)
+    # Sliding-window submission (see bounded_map). storm_search(return_item=True)
+    # returns a full AORCItem pickled back to the parent, and a completed Future
+    # retains it (future._result); holding every returned item until the pool
+    # closed grew RSS with top_n_events and OOM'd on large collections. The items
+    # are already persisted to disk by storm_search and reloaded via
+    # new_collection_from_items_on_disk, so they are unused here — harvesting and
+    # dropping each as it completes bounds the resident set to the window. Unlike a
+    # fixed-chunk submit, the window refills per completion, so a worker that
+    # finishes a light item does not idle waiting on a heavy one in its batch.
     with executor_class(**executor_kwargs) as executor:
-        for i in range(0, len(storm_data), batch_size):
-            batch = storm_data[i : i + batch_size]
-            futures = [
-                executor.submit(
-                    storm_search,
-                    catalog,
-                    storm_date,
-                    storm_duration,
-                    por_rank=por_rank,
-                    collection_id=collection_id,
-                    return_item=True,
-                )
-                for storm_date, por_rank in batch
-            ]
 
-            for future in as_completed(futures):
-                count -= 1
-                try:
-                    r = future.result()
-                    if isinstance(r, dict):
-                        logging.info("%s processed (%d remaining)", r.get("storm_date"), count)
-                    else:
-                        logging.info("%s processed (%d remaining)", r.datetime, count)
-                    del r  # unused (persisted to disk); free it now
-                except Exception as e:
-                    if with_tb:
-                        tb = traceback.format_exc()
-                        logging.error("Error processing: %s\n%s", e, tb)
-                    else:
-                        logging.error("Error processing: %s", e)
+        def on_result(r):
+            nonlocal count
+            count -= 1
+            when = r.get("storm_date") if isinstance(r, dict) else r.datetime
+            logging.info("%s processed (%d remaining)", when, count)
+            # r not retained past this call; nothing references it (persisted to disk).
 
-            # Drop the batch's futures (each still holds its _result) before the next.
-            del futures
-            del batch
-            gc.collect()
+        bounded_map(
+            lambda sd: executor.submit(
+                storm_search,
+                catalog,
+                sd[0],
+                storm_duration,
+                por_rank=sd[1],
+                collection_id=collection_id,
+                return_item=True,
+            ),
+            storm_data,
+            on_result,
+            on_error=_log_processing_error(with_tb),
+            # Heavy AORCItem results: keep the window at num_workers so the resident
+            # set stays bounded (same as the prior batched fix) while still refilling
+            # per completion to avoid straggler idle. Items are ~seconds each, so the
+            # micro-latency of per-completion submit is negligible.
+            max_in_flight=max(1, num_workers),
+            gc_every=max(1, num_workers),
+        )
 
     return None
 
