@@ -1241,7 +1241,7 @@ def get_events_collection(catalog: pystac.Catalog):
         if "-events" in collection.id:
             return collection
 
-        raise ValueError(f"Could not find events collection in catalog: {catalog.id}.")
+    raise ValueError(f"Could not find events collection in catalog: {catalog.id}.")
 
 
 def get_transposition_item(catalog: pystac.Catalog, use_valid_region: bool = False):
