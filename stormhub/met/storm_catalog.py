@@ -709,7 +709,7 @@ def storm_search(
     return_item: bool = False,
     scale_max: float = 12.0,
     collection_id: str = None,
-) -> Union[dict, AORCItem]:
+) -> dict:
     """
     Search for a storm event.
 
@@ -717,13 +717,18 @@ def storm_search(
         catalog (StormCatalog): The storm catalog.
         storm_start_date (datetime): The start date of the storm.
         storm_duration_hours (int): The duration of the storm in hours.
-        return_item (bool): Whether to return the storm item.
+        return_item (bool): When True, build and persist the full item (thumbnail,
+            max-precip point, saved STAC object) instead of just the scan stats.
+            Either way a small summary dict is returned, never the AORCItem itself.
         scale_max (float): The maximum scale for the thumbnail.
         collection_id (str): The ID of the collection.
 
     Returns
     -------
-        Union[dict, AORCItem]: The storm search results or the storm item.
+        dict: Scan results ``{storm_date, centroid, aorc:statistics}`` when
+        ``return_item`` is False, or a lightweight item summary ``{id, datetime}``
+        when True. The persisted item is reloaded from disk by callers; it is never
+        pickled back to the parent.
     """
     if not collection_id:
         collection_id = catalog.spm.storm_collection_id(storm_duration_hours)
@@ -769,7 +774,14 @@ def storm_search(
         event_item.aorc_thumbnail(scale_max=scale_max)
         event_item.max_precip_point()
         event_item.save_object(dest_href=catalog.spm.collection_item(collection_id, event_item.id))
-        return event_item
+        # The item is persisted above and reloaded from disk by the caller
+        # (new_collection_from_items_on_disk), so it is never used in the parent.
+        # Return a tiny summary instead of pickling the whole AORCItem back — that
+        # per-item transfer grew the parent's RSS with top_n and was the OOM source.
+        summary = {"id": event_item.id, "datetime": event_item.datetime}
+        del event_item
+        gc.collect()
+        return summary
     else:
         result = {
             "storm_date": storm_start_date.strftime("%Y-%m-%dT%H"),
@@ -1076,23 +1088,18 @@ def create_items(
     if not use_threads:
         executor_kwargs["mp_context"] = _SPAWN_CTX
 
-    # Sliding-window submission (see bounded_map). storm_search(return_item=True)
-    # returns a full AORCItem pickled back to the parent, and a completed Future
-    # retains it (future._result); holding every returned item until the pool
-    # closed grew RSS with top_n_events and OOM'd on large collections. The items
-    # are already persisted to disk by storm_search and reloaded via
-    # new_collection_from_items_on_disk, so they are unused here — harvesting and
-    # dropping each as it completes bounds the resident set to the window. Unlike a
-    # fixed-chunk submit, the window refills per completion, so a worker that
-    # finishes a light item does not idle waiting on a heavy one in its batch.
+    # Sliding-window submission (see bounded_map). storm_search persists each item
+    # to disk and returns only a small summary dict, which is harvested and dropped
+    # as it completes — so nothing accumulates in the parent regardless of top_n
+    # (this, not the window size, is what removes the original OOM). The window then
+    # exists purely for throughput: refilling per completion keeps every worker busy
+    # instead of idling behind the slowest item in a fixed chunk.
     with executor_class(**executor_kwargs) as executor:
 
         def on_result(r):
             nonlocal count
             count -= 1
-            when = r.get("storm_date") if isinstance(r, dict) else r.datetime
-            logging.info("%s processed (%d remaining)", when, count)
-            # r not retained past this call; nothing references it (persisted to disk).
+            logging.info("%s processed (%d remaining)", r["datetime"], count)
 
         bounded_map(
             lambda sd: executor.submit(
@@ -1107,12 +1114,7 @@ def create_items(
             storm_data,
             on_result,
             on_error=_log_processing_error(with_tb),
-            # Heavy AORCItem results: keep the window at num_workers so the resident
-            # set stays bounded (same as the prior batched fix) while still refilling
-            # per completion to avoid straggler idle. Items are ~seconds each, so the
-            # micro-latency of per-completion submit is negligible.
-            max_in_flight=max(1, num_workers),
-            gc_every=max(1, num_workers),
+            max_in_flight=2 * max(1, num_workers),
         )
 
     return None
