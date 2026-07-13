@@ -1029,35 +1029,51 @@ def create_items(
     if not use_threads:
         executor_kwargs["mp_context"] = _SPAWN_CTX
 
+    # Submit in bounded batches, mirroring multi_processor. storm_search(return_item=
+    # True) returns a full AORCItem pickled back to the parent, and each completed
+    # Future retains it (future._result). Submitting all storm_data at once would
+    # keep every returned item resident until the pool closed, so RSS grew
+    # monotonically with top_n_events and OOM'd on large collections. The items are
+    # already persisted to disk by storm_search and reloaded via
+    # new_collection_from_items_on_disk, so the returned objects are unused here —
+    # drop them each batch to bound the resident set to num_workers.
+    batch_size = max(1, num_workers)
     with executor_class(**executor_kwargs) as executor:
-        futures = [
-            executor.submit(
-                storm_search,
-                catalog,
-                storm_date,
-                storm_duration,
-                por_rank=por_rank,
-                collection_id=collection_id,
-                return_item=True,
-            )
-            for storm_date, por_rank in storm_data
-        ]
+        for i in range(0, len(storm_data), batch_size):
+            batch = storm_data[i : i + batch_size]
+            futures = [
+                executor.submit(
+                    storm_search,
+                    catalog,
+                    storm_date,
+                    storm_duration,
+                    por_rank=por_rank,
+                    collection_id=collection_id,
+                    return_item=True,
+                )
+                for storm_date, por_rank in batch
+            ]
 
-        for future in as_completed(futures):
-            count -= 1
-            try:
-                r = future.result()
-                if isinstance(r, dict):
-                    logging.info("%s processed (%d remaining)", r.get("storm_date"), count)
-                else:
-                    logging.info("%s processed (%d remaining)", r.datetime, count)
+            for future in as_completed(futures):
+                count -= 1
+                try:
+                    r = future.result()
+                    if isinstance(r, dict):
+                        logging.info("%s processed (%d remaining)", r.get("storm_date"), count)
+                    else:
+                        logging.info("%s processed (%d remaining)", r.datetime, count)
+                    del r  # unused (persisted to disk); free it now
+                except Exception as e:
+                    if with_tb:
+                        tb = traceback.format_exc()
+                        logging.error("Error processing: %s\n%s", e, tb)
+                    else:
+                        logging.error("Error processing: %s", e)
 
-            except Exception as e:
-                if with_tb:
-                    tb = traceback.format_exc()
-                    logging.error("Error processing: %s\n%s", e, tb)
-                else:
-                    logging.error("Error processing: %s", e)
+            # Drop the batch's futures (each still holds its _result) before the next.
+            del futures
+            del batch
+            gc.collect()
 
     return None
 
